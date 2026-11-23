@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import math
 import os
 import threading
+import time
 from ctypes import wintypes
+from pathlib import Path
 from typing import Any
+
+from config import DATA_DIR
 
 MAX_CHARS = 512
 MAX_WEAPONS = 64
@@ -231,7 +236,12 @@ WEAPON_CATEGORY_MAP: dict[int, str] = {
 class GRWLiveReader:
     """Lê GRWTelemetryState sem bloqueio e classifica Ghosts/Santa Blanca/Unidad/Rebeldes/Civis + estados."""
 
-    def __init__(self, telemetry_ptr: int | None = None, world_bounds: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        telemetry_ptr: int | None = None,
+        world_bounds: dict[str, Any] | None = None,
+        probe_dump_path: Path | str | None = None,
+    ) -> None:
         self.telemetry_ptr = telemetry_ptr
         self._state: GRWTelemetryState | None = None
         if telemetry_ptr and telemetry_ptr > 0x10000:
@@ -253,6 +263,9 @@ class GRWLiveReader:
         self._trail_move_steps: int = 0
         self._trail_need_break: bool = True
         self._override_snapshot: dict[str, Any] | None = None
+        self._explicit_probe_dump: bool = probe_dump_path is not None
+        self._probe_dump_path: Path = Path(probe_dump_path) if probe_dump_path else (DATA_DIR / "last_live_probe.json")
+        self._last_probe_dump_ts: float = 0.0
 
     def set_world_bounds(self, bounds: dict[str, Any]) -> None:
         with self._lock:
@@ -376,12 +389,15 @@ class GRWLiveReader:
         fac_1 = EFACTION_MAP.get(int(c.faction_1e8))
 
         fac_enum: str | None = None
-        for cand in (fac_0, fac_1, fac_d0):
-            if cand and cand != "civilian":
-                fac_enum = cand
-                break
+        if "rebel" in (fac_d0, fac_0, fac_1):
+            fac_enum = "rebel"
+        else:
+            for cand in (fac_d0, fac_0, fac_1):
+                if cand and cand != "civilian":
+                    fac_enum = cand
+                    break
         if fac_enum is None:
-            for cand in (fac_0, fac_1, fac_d0):
+            for cand in (fac_d0, fac_0, fac_1):
                 if cand == "civilian":
                     fac_enum = "civilian"
                     break
@@ -664,11 +680,40 @@ class GRWLiveReader:
         enemies: list[dict[str, Any]] = []
         rebels: list[dict[str, Any]] = []
         civilians: list[dict[str, Any]] = []
+        probe_rows: list[dict[str, Any]] = []
 
         for c in active_slots:
             kind = self._classify_character(
                 c, local_ent, local_skel, weapon_by_owner, player_rig, mod_base, coop_entities
             )
+            vt_rva = (int(c.npc_vtable) - mod_base) if (c.npc_vtable and mod_base and c.npc_vtable > mod_base) else 0
+            probe_rows.append({
+                "ent_ptr": hex(int(c.entity_ptr)),
+                "npc_ptr": hex(int(c.npc_ptr)),
+                "entity_vtable": hex(int(c.entity_vtable)),
+                "npc_vtable": hex(int(c.npc_vtable)),
+                "npc_vt_rva": hex(vt_rva),
+                "faction_raw": int(c.faction_raw),
+                "faction_1e8": int(c.faction_1e8),
+                "ent_d0": hex(int(c.ent_u32[31])),
+                "alert_raw": int(c.alert_raw),
+                "alert_328": int(c.alert_328),
+                "is_player_comp": int(c.is_player_comp),
+                "classified_role": kind,
+                "classified_faction": {
+                    "player": "ghost",
+                    "ally_coop": "ghost",
+                    "ally_ai": "ghost",
+                    "ally_ai_candidate": "ghost",
+                    "enemy_unidad": "unidad",
+                    "enemy_sb": "santa_blanca",
+                    "rebel": "rebel",
+                    "civilian": "civilian",
+                }.get(kind, kind),
+                "x": round(float(c.root_pos[0]), 2),
+                "y": round(float(c.root_pos[1]), 2),
+                "z": round(float(c.root_pos[2]), 2),
+            })
             if kind == "player":
                 continue
 
@@ -865,6 +910,29 @@ class GRWLiveReader:
                     "weapon_class": bo["weapon_class"],
                 }
                 (enemies if npc_obj["faction"] == "santa_blanca" else civilians).append(npc_obj)
+
+        if len(probe_rows) > 1 and (mod_base != 0 or self._explicit_probe_dump):
+            now_wall = time.monotonic()
+            should_dump = False
+            with self._lock:
+                if (now_wall - self._last_probe_dump_ts) >= 10.0:
+                    self._last_probe_dump_ts = now_wall
+                    should_dump = True
+            if should_dump:
+                try:
+                    self._probe_dump_path.parent.mkdir(parents=True, exist_ok=True)
+                    payload = {
+                        "ts": time.time(),
+                        "hooks_mask": hex(hooks_mask),
+                        "module_base": hex(mod_base),
+                        "chars_count": len(probe_rows),
+                        "chars": probe_rows,
+                    }
+                    tmp_path = self._probe_dump_path.with_suffix(".tmp")
+                    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                    tmp_path.replace(self._probe_dump_path)
+                except OSError:
+                    pass
 
         return {
             "mode": "live",

@@ -653,16 +653,39 @@ class TestBugfixesV120(unittest.TestCase):
         reb.root_pos[0], reb.root_pos[1], reb.root_pos[2] = 25.0, 30.0, 100.0
         reb.head_pos[0], reb.head_pos[1], reb.head_pos[2] = 25.0, 30.0, 101.6
 
+        # Caso regressão v1.3.0: mesmo se subcomponente secundário trouxer 3 (MexCartel), Entity+0xD0=Rebelde deve vencer!
+        reb2 = st.chars[2]
+        reb2.entity_ptr = 0x3001
+        reb2.skel_ptr = 0x4001
+        reb2.valid_flags = 3
+        reb2.last_seen_ms = now_ms
+        reb2.faction_raw = 3  # Santa Blanca em campo secundário
+        reb2.faction_1e8 = 3
+        reb2.alert_raw = 1
+        reb2.ent_u32[31] = (7 + 1) << 10  # Entity::GetFaction = 7 (Rebel)
+        reb2.root_pos[0], reb2.root_pos[1], reb2.root_pos[2] = 35.0, 40.0, 100.0
+        reb2.head_pos[0], reb2.head_pos[1], reb2.head_pos[2] = 35.0, 40.0, 101.6
+
         w = st.weapons[0]
         w.weapon_ptr = 0x9000
         w.gun_root_owner = 0x3000
         w.last_seen_ms = now_ms
 
-        reader = GRWLiveReader(telemetry_ptr=ctypes.addressof(st))
-        frame = reader.read_live_frame()
-        self.assertEqual(len(frame["rebels"]), 1)
-        self.assertEqual(frame["rebels"][0]["faction"], "rebel")
-        self.assertEqual(len(frame["enemies"]), 0)
+        with tempfile.TemporaryDirectory() as td:
+            dump_path = Path(td) / "probe.json"
+            reader = GRWLiveReader(telemetry_ptr=ctypes.addressof(st), probe_dump_path=dump_path)
+            self.assertEqual(
+                reader._classify_character(reb2, 0x1000, 0x2000, {0x3000: w}, 0, 0, set()),
+                "rebel",
+            )
+            frame = reader.read_live_frame()
+            self.assertEqual(len(frame["rebels"]), 2)
+            self.assertTrue(all(r["faction"] == "rebel" for r in frame["rebels"]))
+            self.assertEqual(len(frame["enemies"]), 0)
+            self.assertTrue(dump_path.is_file())
+            dump_obj = json.loads(dump_path.read_text(encoding="utf-8"))
+            self.assertGreaterEqual(dump_obj["chars_count"], 3)
+            self.assertTrue(any(row["classified_faction"] == "rebel" for row in dump_obj["chars"]))
 
     def test_trail_arming_and_teleport_break(self) -> None:
         import ctypes

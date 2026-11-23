@@ -692,6 +692,51 @@ static int find_npc_link(uint64_t ent, uint64_t *out_npc, uint64_t *out_vt) {{
     return 0;
 }}
 
+static int find_npc_for_ent(uint64_t ent, uint64_t *out_npc, uint64_t *out_vt) {{
+    if (find_npc_link(ent, out_npc, out_vt)) return 1;
+    if (!ptr_ok(ent) || g_telemetry.module_base == 0) return 0;
+    uint64_t found_npc = 0, found_vt = 0;
+    __try {{
+        /* Entity + 0x78 -> array Component** (verificado em GRW.exe 0x14A4CCE9C) */
+        uint64_t comp_arr = *(const uint64_t *)(ent + 0x78);
+        if (ptr_ok(comp_arr)) {{
+            for (int i = 0; i < 16; ++i) {{
+                uint64_t comp = 0;
+                __try {{
+                    comp = ((const uint64_t *)comp_arr)[i];
+                }} __except (EXCEPTION_EXECUTE_HANDLER) {{
+                    break;
+                }}
+                if (!ptr_ok(comp)) continue;
+                uint64_t vt = 0, owner = 0;
+                __try {{
+                    vt = *(const uint64_t *)comp;
+                    owner = *(const uint64_t *)(comp + 0x10);
+                }} __except (EXCEPTION_EXECUTE_HANDLER) {{
+                    continue;
+                }}
+                if (owner == ent && vt > g_telemetry.module_base) {{
+                    uint64_t vt_rva = vt - g_telemetry.module_base;
+                    if (vt_rva >= 0x03B78000ULL && vt_rva <= 0x03B83000ULL) {{
+                        found_npc = comp;
+                        found_vt = vt;
+                        break;
+                    }}
+                }}
+            }}
+        }}
+    }} __except (EXCEPTION_EXECUTE_HANDLER) {{
+        return 0;
+    }}
+    if (found_npc) {{
+        link_npc_entity(ent, found_npc, found_vt, GetTickCount64());
+        *out_npc = found_npc;
+        *out_vt = found_vt;
+        return 1;
+    }}
+    return 0;
+}}
+
 static void read_npc_faction_alert(uint64_t npc, GRWCharSlot *slot) {{
     slot->faction_raw = -1;
     slot->alert_raw = -1;
@@ -699,37 +744,37 @@ static void read_npc_faction_alert(uint64_t npc, GRWCharSlot *slot) {{
     slot->alert_328 = -1;
     if (!ptr_ok(npc)) return;
     __try {{
-        uint64_t fsub = *(const uint64_t *)(npc + 0x258);
-        if (ptr_ok(fsub)) {{
-            int32_t f0 = *(const int32_t *)(fsub + 0x10C);
-            if (f0 >= 0 && f0 <= 7) slot->faction_raw = f0;
+        /* Somente fontes verificadas via disassembly de Entity::SetFaction em GRW.exe TU25 */
+        int32_t npc_fac = -1;
+        int32_t f418 = -1;
+        uint64_t p418 = *(const uint64_t *)(npc + 0x418);
+        if (ptr_ok(p418)) {{
+            int32_t f = *(const int32_t *)(p418 + 0xA0);
+            if (f >= 0 && f <= 7) f418 = f;
         }}
-        uint64_t sub1e8 = *(const uint64_t *)(npc + 0x1E8);
-        if (ptr_ok(sub1e8)) {{
-            int32_t f1 = *(const int32_t *)(sub1e8 + 0x120);
-            if (f1 >= 0 && f1 <= 7) slot->faction_1e8 = f1;
+        if (f418 > 0) {{
+            npc_fac = f418;
         }}
-        /* Subcomponentes adicionais de GR_cNPCComponent verificados em GRW.exe (0x27d7f3a) */
-        static const struct {{ uint16_t sub_off; uint16_t val_off; }} k_fsubs[7] = {{
-            {{ 0x1F8u, 0x190u }},
-            {{ 0x210u, 0x168u }},
-            {{ 0x288u, 0x150u }},
-            {{ 0x310u, 0x060u }},
-            {{ 0x380u, 0x09Cu }},
-            {{ 0x390u, 0x170u }},
-            {{ 0x418u, 0x0A0u }},
-        }};
-        for (int k = 0; k < 7; ++k) {{
-            if (slot->faction_raw > 0 && slot->faction_1e8 > 0) break;
-            uint64_t psub = *(const uint64_t *)(npc + k_fsubs[k].sub_off);
-            if (ptr_ok(psub)) {{
-                int32_t fk = *(const int32_t *)(psub + k_fsubs[k].val_off);
-                if (fk >= 1 && fk <= 7) {{
-                    if (slot->faction_raw <= 0) slot->faction_raw = fk;
-                    else if (slot->faction_1e8 <= 0) slot->faction_1e8 = fk;
-                }}
+        if (npc_fac <= 0) {{
+            uint64_t p120 = *(const uint64_t *)(npc + 0x120);
+            if (ptr_ok(p120)) {{
+                int32_t f = *(const int32_t *)(p120 + 0x38);
+                if (f >= 1 && f <= 7) npc_fac = f;
             }}
         }}
+        if (npc_fac <= 0) {{
+            int32_t f2d4 = *(const int32_t *)(npc + 0x2D4);
+            if (f2d4 >= 1 && f2d4 <= 7) npc_fac = f2d4;
+        }}
+        if (npc_fac <= 0) {{
+            int32_t f328 = *(const int32_t *)(npc + 0x328);
+            if (f328 >= 1 && f328 <= 7) npc_fac = f328;
+        }}
+        if (npc_fac < 0 && f418 == 0) {{
+            npc_fac = 0;
+        }}
+        slot->faction_1e8 = npc_fac;
+
         uint64_t asub1 = *(const uint64_t *)(npc + 0x320);
         if (ptr_ok(asub1)) {{
             slot->alert_raw = *(const int32_t *)(asub1 + 0x0F0);
@@ -1083,30 +1128,38 @@ static void record_skeleton(uint64_t skel) {{
             }}
         }}
         slot->is_player_comp = is_p;
+        slot->npc_ptr = 0;
+        slot->npc_vtable = 0;
+        slot->faction_raw = -1;
+        slot->alert_raw = -1;
+        slot->faction_1e8 = -1;
+        slot->alert_328 = -1;
         uint64_t l_npc = 0, l_vt = 0;
-        if (find_npc_link(ent, &l_npc, &l_vt)) {{
+        if (find_npc_for_ent(ent, &l_npc, &l_vt)) {{
             slot->npc_ptr = l_npc;
             slot->npc_vtable = l_vt;
             read_npc_faction_alert(l_npc, slot);
-        }} else {{
-            slot->npc_ptr = 0;
-            slot->npc_vtable = 0;
-            slot->faction_raw = -1;
-            slot->alert_raw = -1;
-            slot->faction_1e8 = -1;
-            slot->alert_328 = -1;
         }}
         if (ptr_ok(ent)) {{
             /* Entity::GetFaction (GRW.exe 0x00A179E0 -> 0x0A490390): bits 10..13 de *(uint32_t*)(ent + 0xD0) - 1 = eFaction (0..7) */
             uint32_t ent_d0 = *(const uint32_t *)(ent + 0xD0);
             uint32_t fbits = (ent_d0 >> 10) & 0x0Fu;
-            if (fbits >= 1u && fbits <= 8u) {{
-                int32_t ent_fac = (int32_t)(fbits - 1u);
-                if (slot->faction_raw < 0 || (slot->faction_raw == 0 && ent_fac > 0)) {{
-                    slot->faction_raw = ent_fac;
-                }} else if (slot->faction_1e8 < 0 || (slot->faction_1e8 == 0 && ent_fac > 0)) {{
-                    slot->faction_1e8 = ent_fac;
+            if (fbits == 0u) {{
+                uint64_t parent_ent = *(const uint64_t *)(ent + 0x58);
+                if (ptr_ok(parent_ent)) {{
+                    uint32_t pd0 = *(const uint32_t *)(parent_ent + 0xD0);
+                    uint32_t pfbits = (pd0 >> 10) & 0x0Fu;
+                    if (pfbits >= 1u && pfbits <= 8u) {{
+                        ent_d0 = pd0;
+                        fbits = pfbits;
+                    }}
                 }}
+            }}
+            int32_t ent_fac = (fbits >= 1u && fbits <= 8u) ? (int32_t)(fbits - 1u) : -1;
+            if (ent_fac >= 0) {{
+                slot->faction_raw = ent_fac;
+            }} else if (slot->faction_1e8 >= 0) {{
+                slot->faction_raw = slot->faction_1e8;
             }}
             if (first_or_periodic) {{
                 slot->entity_vtable = *(const uint64_t *)ent;
