@@ -416,6 +416,7 @@ class TestServerAndPersistence(unittest.TestCase):
                 "soundFactions": ["santa_blanca", "rebel"],
                 "showFactionRebel": False,
                 "selectedProvince": "itacua",
+                "nearbyCats": ["weapon_case", "attachment_case", "kingslayer", "skill_point"],
             }
             req = urllib.request.Request(
                 f"{base}/api/settings",
@@ -616,6 +617,53 @@ class TestBugfixesV120(unittest.TestCase):
         self.assertGreaterEqual(len(frame["enemies"]), 20)
         self.assertEqual(len([a for a in frame["allies"] if a["type"] == "coop"]), 0)
 
+    def test_rebel_entity_d0_faction_and_offscreen_retention(self) -> None:
+        import ctypes
+        from grw_memory import TELEMETRY_MAGIC
+
+        now_ms = int(ctypes.windll.kernel32.GetTickCount64())
+        st = GRWTelemetryState()
+        st.magic = TELEMETRY_MAGIC
+        st.version = TELEMETRY_VERSION
+        st.hooks_mask = 1
+        st.build_matched = 1
+        st.cam_valid = 1
+        st.cam_last_ms = now_ms
+        st.cam_fwd[1] = 1.0
+        st.local_player_entity = 0x1000
+        st.local_player_skel = 0x2000
+
+        p = st.chars[0]
+        p.entity_ptr = 0x1000
+        p.skel_ptr = 0x2000
+        p.valid_flags = 3
+        p.last_seen_ms = now_ms
+
+        # Rebelde com arma equipada e faction_raw=0 (Neutro no subcomponente 0x258), mas Entity+0xD0 bits 10..13 = 8 (8-1 = 7 = Rebel)
+        # e visto há 2100ms (fora do frustum da câmera com throttling de LOD)
+        reb = st.chars[1]
+        reb.entity_ptr = 0x3000
+        reb.skel_ptr = 0x4000
+        reb.valid_flags = 3
+        reb.last_seen_ms = now_ms - 2100
+        reb.faction_raw = 0
+        reb.faction_1e8 = -1
+        reb.alert_raw = 1
+        reb.ent_u32[31] = 8 << 10  # (fbits - 1) == 7 (Rebel)
+        reb.root_pos[0], reb.root_pos[1], reb.root_pos[2] = 25.0, 30.0, 100.0
+        reb.head_pos[0], reb.head_pos[1], reb.head_pos[2] = 25.0, 30.0, 101.6
+
+        w = st.weapons[0]
+        w.weapon_ptr = 0x9000
+        w.gun_root_owner = 0x3000
+        w.last_seen_ms = now_ms
+
+        reader = GRWLiveReader(telemetry_ptr=ctypes.addressof(st))
+        frame = reader.read_live_frame()
+        self.assertEqual(len(frame["rebels"]), 1)
+        self.assertEqual(frame["rebels"][0]["faction"], "rebel")
+        self.assertEqual(len(frame["enemies"]), 0)
+
     def test_trail_arming_and_teleport_break(self) -> None:
         import ctypes
         from grw_memory import TELEMETRY_MAGIC
@@ -680,6 +728,9 @@ class TestBugfixesV120(unittest.TestCase):
         vid_att_ak = 0x111122223333
         vid_wp_tar = 0x111122224444
         vid_wp_llam = 0x111122225555
+        vid_doc_av = 0x79FB146095
+        vid_skill_av = 0x118FEB6067A
+        vid_medal_av = 648457331000
 
         # Chunk campanha 0x1FE25FCB
         chunk_camp = (
@@ -703,6 +754,9 @@ class TestBugfixesV120(unittest.TestCase):
             + struct.pack("<Q", vid_wp_llam)
             + b"\x00" * 12
         )
+        # Chunk pickups 0x8C28B28A (medalha + ponto de habilidade) e chunk state list 0x42709AEA (documento Kingslayer)
+        chunk_pickups = b"\x00" * 12 + b"\x9d\x04\x0b\x01" + struct.pack("<I2Q", 2, vid_skill_av, vid_medal_av)
+        chunk_docs = b"\x00" * 12 + b"\x9d\x04\x0b\x01" + struct.pack("<I1Q", 1, vid_doc_av)
 
         def _wrap_chunk(cid: int, data: bytes) -> bytes:
             return (
@@ -713,7 +767,12 @@ class TestBugfixesV120(unittest.TestCase):
                 + data
             )
 
-        plaintext = _wrap_chunk(gs.CID_CAMPAIGN_PROGRESS, chunk_camp) + _wrap_chunk(gs.CID_INVENTORY_UNLOCKS, chunk_inv)
+        plaintext = (
+            _wrap_chunk(gs.CID_CAMPAIGN_PROGRESS, chunk_camp)
+            + _wrap_chunk(gs.CID_INVENTORY_UNLOCKS, chunk_inv)
+            + _wrap_chunk(gs.CID_WORLD_PICKUPS, chunk_pickups)
+            + _wrap_chunk(gs.CID_WORLD_STATE_LIST, chunk_docs)
+        )
         enc = gs.encrypt_grw_payload(plaintext, seed1=54321, seed2=98765, bsz=16)
         # Simula cabeçalho Ubisoft de 552 bytes (.save)
         header = struct.pack("<I", 548) + b"\x00" * 548
@@ -732,6 +791,7 @@ class TestBugfixesV120(unittest.TestCase):
                     str(vid_wp_tar): "ASR_TAR21",
                     str(vid_wp_llam): "LEG_LMG_KRYTAC_LLAMATIVO",
                 },
+                "table3_docs": {str(vid_doc_av): "DBCollectibleDescriptor_06_000"},
             }
             sync._t1_missions = {vid_prov: "AguaVerde-INF_06", vid_boss: "INF_06_M060_Boss"}
             sync._t1_lo4 = {
@@ -743,12 +803,17 @@ class TestBugfixesV120(unittest.TestCase):
                 vid_wp_tar: "ASR_TAR21",
                 vid_wp_llam: "LEG_LMG_KRYTAC_LLAMATIVO",
             }
+            sync._t3_docs = {vid_doc_av: "DBCollectibleDescriptor_06_000"}
             sync._t2_lo4 = {}
             for k, v in sync._t2_items.items():
                 sync._t2_lo4.setdefault(k & 0xFFFFFFFF, []).append((k, v))
-            m_pt, _, ct = build_static_databases("pt-BR")
+            wm_col = {
+                "documents": [{"id": "ks_agua_verde_01", "vid": vid_doc_av, "gbs_name": "DBCollectibleDescriptor_06_000", "province": "agua_verde", "u": 0.6785, "v": 0.2442}],
+                "skill_points": [{"id": "skill_agua_verde_01", "vid": vid_skill_av, "province": "agua_verde", "tier": "DBLootConfig_Easy_AvatarUpgradePoints", "u": 0.5327, "v": 0.319}],
+            }
+            m_pt, _, ct = build_static_databases("pt-BR", wm_collectibles=wm_col)
             sync._provinces = ct["provinces"]
-            sync._pois = m_pt["pois"]
+            sync.set_context(pois=m_pt["pois"])
             sync._catalog_loaded = True
 
             prog, changed = sync.sync_disk_saves({}, save_paths=[sf], force=True)
@@ -758,6 +823,10 @@ class TestBugfixesV120(unittest.TestCase):
             self.assertIn("att_ar_long_barrel", prog["collected_items"])
             self.assertIn("wp_tar21", prog["collected_items"])
             self.assertIn("wp_llamativo", prog["collected_items"])
+            self.assertIn("med_rebel_icon", prog["collected_items"])
+            self.assertIn("poi_med_rebel_icon", prog["completed_pois"])
+            self.assertIn("ks_agua_verde_01", prog["completed_pois"])
+            self.assertIn("skill_agua_verde_01", prog["completed_pois"])
             self.assertNotIn("wp_ak47", prog["collected_items"])
 
     @unittest.skipUnless(
@@ -772,7 +841,7 @@ class TestBugfixesV120(unittest.TestCase):
             tp = Path(td)
             fa = ForgeArchive(WILDLANDS_DIR / "DataPC.forge")
             fids = ab._build_forge_ids_index(fa, game_dir=WILDLANDS_DIR)
-            map_data, catalog_data, cartel_data = build_static_databases("pt-BR")
+            map_data, catalog_data, cartel_data = build_static_databases("pt-BR", wm_collectibles=fids.get("wm_collectibles"))
 
             fjson = tp / "forge_ids.json"
             cjson = tp / "cartel.json"
@@ -795,8 +864,13 @@ class TestBugfixesV120(unittest.TestCase):
                 self.assertNotIn("espiritu_santo", prog["defeated_bosses"])
                 for und in ("barvechos", "media_luna"):
                     self.assertNotIn(und, prog["discovered_provinces"])
-                for item in ("wp_llamativo", "wp_sr3m", "att_panoramic"):
+                for item in ("wp_llamativo", "wp_sr3m", "att_panoramic", "med_rebel_icon", "med_no_pain"):
                     self.assertIn(item, prog["collected_items"])
+                # Todos os 11 documentos e 7 pontos de habilidade de Agua Verde devem estar sincronizados
+                for idx in range(1, 12):
+                    self.assertIn(f"ks_agua_verde_{idx:02d}", prog["completed_pois"])
+                for idx in range(1, 8):
+                    self.assertIn(f"skill_agua_verde_{idx:02d}", prog["completed_pois"])
             finally:
                 gs.FORGE_IDS_PATH, gs.CARTEL_PATH, gs.MAP_DATA_PATH, gs.CATALOG_PATH = old_paths
 

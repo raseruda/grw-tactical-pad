@@ -265,6 +265,9 @@ class AutoProgressSync:
         self._t1_lo4: dict[int, list[tuple[int, str]]] = {}
         self._t2_items: dict[int, str] = {}
         self._t2_lo4: dict[int, list[tuple[int, str]]] = {}
+        self._t3_docs: dict[int, str] = {}
+        self._poi_by_vid: dict[int, dict[str, Any]] = {}
+        self._poi_by_gbs: dict[str, dict[str, Any]] = {}
         self._provinces: list[dict[str, Any]] = []
         self._pois: list[dict[str, Any]] = []
         self._wm_coords_cache: dict[str, list[float]] | None = None
@@ -275,6 +278,21 @@ class AutoProgressSync:
             self.game_dir = game_dir
         if pois is not None:
             self._pois = list(pois)
+            self._rebuild_poi_lookup()
+
+    def _rebuild_poi_lookup(self) -> None:
+        self._poi_by_vid = {}
+        self._poi_by_gbs = {}
+        for poi in self._pois:
+            vid = poi.get("vid")
+            if vid is not None:
+                try:
+                    self._poi_by_vid[int(vid)] = poi
+                except (ValueError, TypeError):
+                    pass
+            gnm = poi.get("gbs_name")
+            if isinstance(gnm, str) and gnm:
+                self._poi_by_gbs[gnm] = poi
 
     def reload_index(self) -> None:
         if FORGE_IDS_PATH.is_file():
@@ -287,8 +305,10 @@ class AutoProgressSync:
 
         t1_raw = self._forge_ids.get("table1_missions") or {}
         t2_raw = self._forge_ids.get("table2_items") or {}
+        t3_raw = self._forge_ids.get("table3_docs") or {}
         self._t1_missions = {int(k): str(v) for k, v in t1_raw.items()}
         self._t2_items = {int(k): str(v) for k, v in t2_raw.items()}
+        self._t3_docs = {int(k): str(v) for k, v in t3_raw.items()}
         self._t1_lo4 = {}
         for vid, nm in self._t1_missions.items():
             self._t1_lo4.setdefault(vid & 0xFFFFFFFF, []).append((vid, nm))
@@ -308,6 +328,7 @@ class AutoProgressSync:
                 self._pois = list(md.get("pois") or [])
             except (OSError, json.JSONDecodeError):
                 self._pois = []
+        self._rebuild_poi_lookup()
         if not self._catalog_loaded and CATALOG_PATH.is_file():
             self._catalog_loaded = True
 
@@ -484,7 +505,7 @@ class AutoProgressSync:
         return out
 
     def _scan_world_pickup_chunk(self, buf: bytes, allowed_provinces: set[str]) -> tuple[set[str], set[str]]:
-        """Extrai caixas/medalhas/POIs abertos a partir do chunk 0x8C28B28A (`9d 04 0b 01`)."""
+        """Extrai caixas/medalhas/pontos de habilidade/documentos abertos a partir dos chunks 0x8C28B28A e 0x42709AEA (`9d 04 0b 01`)."""
         items: set[str] = set()
         pois_done: set[str] = set()
         if not buf or not self._pois:
@@ -493,10 +514,27 @@ class AutoProgressSync:
         if pm < 0 or pm + 8 > len(buf):
             return items, pois_done
         cnt = struct.unpack_from("<I", buf, pm + 4)[0]
-        if cnt < 10 or cnt > 2500 or pm + 8 + cnt * 8 > len(buf):
+        if cnt < 1 or cnt > 5000 or pm + 8 + cnt * 8 > len(buf):
             return items, pois_done
         vids = list(struct.unpack_from(f"<{cnt}Q", buf, pm + 8))
-        resolved = self._resolve_wm_pickup_coords(vids)
+
+        unresolved_vids: list[int] = []
+        for vid in vids:
+            poi = self._poi_by_vid.get(int(vid))
+            if poi is None and int(vid) in self._t3_docs:
+                poi = self._poi_by_gbs.get(self._t3_docs[int(vid)])
+            if poi is not None:
+                pois_done.add(str(poi["id"]))
+                iid = poi.get("item_id")
+                if iid and poi.get("cat") in ("bonus_medal", "weapon_case", "attachment_case"):
+                    items.add(str(iid))
+            else:
+                unresolved_vids.append(int(vid))
+
+        if not unresolved_vids:
+            return items, pois_done
+
+        resolved = self._resolve_wm_pickup_coords(unresolved_vids)
         if not resolved:
             return items, pois_done
 
@@ -583,6 +621,9 @@ class AutoProgressSync:
                     limit_n = min(len(pr_missions), pm_info["done"])
                     for m in pr_missions[:limit_n]:
                         missions.add(str(m["id"]))
+
+        for bid in list(bosses):
+            pois.add(f"boss_{bid}")
 
         for iid in list(items):
             pois.add(f"poi_{iid}")
@@ -744,6 +785,9 @@ class AutoProgressSync:
             if str(pr["id"]) in bosses:
                 for m in pr.get("missions") or []:
                     missions.add(str(m["id"]))
+
+        for bid in list(bosses):
+            pois.add(f"boss_{bid}")
 
         for iid in list(items):
             pois.add(f"poi_{iid}")

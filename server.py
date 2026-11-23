@@ -144,6 +144,19 @@ def _sanitize_ui_prefs(raw: Any) -> dict[str, Any]:
                     if len(clean) >= 64:
                         break
         out["enabledCats"] = clean
+    nearby_cats = raw.get("nearbyCats")
+    if isinstance(nearby_cats, list):
+        clean_nc: list[str] = []
+        seen_nc: set[str] = set()
+        for item in nearby_cats:
+            if isinstance(item, str):
+                s = item.strip()[:48]
+                if s and s not in seen_nc:
+                    seen_nc.add(s)
+                    clean_nc.append(s)
+                    if len(clean_nc) >= 32:
+                        break
+        out["nearbyCats"] = clean_nc
     for fkey in ("visionFactions", "soundFactions"):
         fval = raw.get(fkey)
         if isinstance(fval, list):

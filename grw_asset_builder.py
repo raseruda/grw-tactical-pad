@@ -157,8 +157,62 @@ def _build_province_masks(sectors_bytes: bytes) -> None:
     Image.frombytes("RGBA", (w, h), bytes(prov_buf)).save(MASKS_CACHE_DIR / "provinces_overlay.png", "PNG")
 
 
-def _extract_gbs_tables(game_dir: Path | None, fallback_forge: ForgeArchive | None = None) -> tuple[dict[str, str], dict[str, str]]:
-    """Extrai tabelas Anvil (Table 1 missões/províncias `0x830B78C0` e Table 2 armas/acessórios `0x36C9CB38`) do Game Bootstrap Settings."""
+_DOC_PREFIX_TO_PROVINCE: dict[str, str] = {
+    "01": "media_luna",
+    "02": "tabacal",
+    "03": "monte_puncu",
+    "04": "espiritu_santo",
+    "05": "san_mateo",
+    "06": "agua_verde",
+    "08": "monte_puncu",
+    "09": "villa_verde",
+    "10": "montuyoc",
+    "11": "itacua",
+    "12": "ocoro",
+    "13": "caimanes",
+    "14": "inca_camina",
+    "15": "pucara",
+    "17": "la_cruz",
+    "18": "malca",
+    "19": "flor_de_oro",
+    "20": "libertad",
+    "21": "barvechos",
+    "22": "mojocoyo",
+    "23": "remanzo",
+    "25": "koani",
+    "ORA": "montuyoc",
+    "SPD": "media_luna",
+}
+
+_WM_PNUM_TO_PROVINCE: dict[int, str] = {
+    1: "barvechos",
+    2: "koani",
+    3: "media_luna",
+    4: "mojocoyo",
+    5: "montuyoc",
+    6: "remanzo",
+    7: "san_mateo",
+    8: "tabacal",
+    9: "caimanes",
+    10: "espiritu_santo",
+    11: "flor_de_oro",
+    12: "itacua",
+    13: "la_cruz",
+    14: "libertad",
+    15: "malca",
+    16: "monte_puncu",
+    17: "ocoro",
+    18: "agua_verde",
+    19: "pucara",
+    20: "villa_verde",
+    21: "inca_camina",
+}
+
+
+def _extract_gbs_tables(
+    game_dir: Path | None, fallback_forge: ForgeArchive | None = None
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+    """Extrai tabelas Anvil (Table 1 missões/províncias `0x830B78C0`, Table 2 armas/acessórios `0x530ACADB`/`0x36C9CB38`, Table 3 documentos `0xCB63269C` e Table 4 loot configs) do Game Bootstrap Settings."""
     gbs_blob: bytes | None = None
     candidates: list[ForgeArchive] = []
     if game_dir is not None:
@@ -183,7 +237,7 @@ def _extract_gbs_tables(game_dir: Path | None, fallback_forge: ForgeArchive | No
             continue
 
     if not gbs_blob:
-        return {}, {}
+        return {}, {}, {}, {}
 
     t1: dict[str, str] = {}
     pos = 0
@@ -204,22 +258,189 @@ def _extract_gbs_tables(game_dir: Path | None, fallback_forge: ForgeArchive | No
         pos = i + 4
 
     t2: dict[str, str] = {}
-    pos = 10
+    for tag in (b"\xdb\xca\x0a\x53", b"\x38\xcb\xc9\x36"):
+        pos = 0
+        while True:
+            i = gbs_blob.find(tag, pos)
+            if i == -1 or i + 16 > blob_len:
+                break
+            slen = struct.unpack_from("<I", gbs_blob, i + 8)[0]
+            if 2 <= slen <= 160 and i + 12 + slen < blob_len and gbs_blob[i + 12 + slen] == 0:
+                name = gbs_blob[i + 12 : i + 12 + slen].decode("ascii", errors="replace")
+                if i + 21 + slen <= blob_len:
+                    vid_after = struct.unpack_from("<Q", gbs_blob, i + 13 + slen)[0]
+                    if vid_after > 0x10000 and name:
+                        t2[str(vid_after)] = name
+                if i >= 10:
+                    vid_before = struct.unpack_from("<Q", gbs_blob, i - 10)[0]
+                    if vid_before > 0x10000 and name and str(vid_before) not in t2:
+                        t2[str(vid_before)] = name
+                pos = i + 13 + slen
+                continue
+            pos = i + 4
+
+    t3_docs: dict[str, str] = {}
+    pos = 0
     while True:
-        i = gbs_blob.find(b"\x38\xcb\xc9\x36", pos)
+        i = gbs_blob.find(b"\x9c\x26\x63\xcb", pos)
         if i == -1 or i + 16 > blob_len:
             break
         slen = struct.unpack_from("<I", gbs_blob, i + 8)[0]
-        if 2 <= slen <= 160 and i + 12 + slen < blob_len and gbs_blob[i + 12 + slen] == 0:
+        if 4 <= slen <= 160 and i + 21 + slen <= blob_len and gbs_blob[i + 12 + slen] == 0:
             name = gbs_blob[i + 12 : i + 12 + slen].decode("ascii", errors="replace")
-            vid = struct.unpack_from("<Q", gbs_blob, i - 10)[0]
-            if vid > 0x10000 and name:
-                t2[str(vid)] = name
-            pos = i + 13 + slen
+            vid = struct.unpack_from("<Q", gbs_blob, i + 13 + slen)[0]
+            if vid > 0x10000 and name.startswith("DBCollectibleDescriptor_"):
+                t3_docs[str(vid)] = name
+            pos = i + 21 + slen
             continue
         pos = i + 4
 
-    return t1, t2
+    t4_loot: dict[str, str] = {}
+    pos = 0
+    while True:
+        i = gbs_blob.find(b"DBLootConfig_", pos)
+        if i == -1:
+            break
+        if i >= 4:
+            slen = struct.unpack_from("<I", gbs_blob, i - 4)[0]
+            if 13 <= slen <= 160 and i + slen + 9 <= blob_len and gbs_blob[i + slen] == 0:
+                name = gbs_blob[i : i + slen].decode("ascii", errors="replace")
+                vid = struct.unpack_from("<Q", gbs_blob, i + slen + 1)[0]
+                if vid > 0x10000:
+                    t4_loot[str(vid)] = name
+                pos = i + slen + 9
+                continue
+        pos = i + 13
+
+    return t1, t2, t3_docs, t4_loot
+
+
+def _extract_worldmap_collectibles(
+    game_dir: Path | None,
+    t3_docs: dict[str, str],
+    t4_loot: dict[str, str],
+) -> dict[str, Any]:
+    """Extrai todos os 211 Documentos (Kingslayer), 149 Pontos de Habilidade e 30 Medalhas do GRN_WorldMap."""
+    out: dict[str, Any] = {"documents": [], "skill_points": [], "medals": []}
+    if game_dir is None:
+        return out
+    wm_path = game_dir / "DataPC_GRN_WorldMap_patch_01.forge"
+    if not wm_path.is_file():
+        wm_path = game_dir / "DataPC_GRN_WorldMap.forge"
+    if not wm_path.is_file():
+        return out
+
+    try:
+        fa = ForgeArchive(wm_path)
+        entries = fa.find_by_name("GRN_WorldMap")
+        if not entries:
+            return out
+        wm = b"".join(fa.read_payload_sets(entries[0]))
+    except Exception:
+        return out
+
+    wm_len = len(wm)
+    # 1. Documentos / Kingslayer Files (classe Anvil 0x80B50EB7)
+    doc_records: list[dict[str, Any]] = []
+    pos = 0
+    sig_doc = b"\xf8\x00\x00\x00\x00\xb7\x0e\xb5\x80"
+    while True:
+        i = wm.find(sig_doc, pos)
+        if i == -1 or i + 42 > wm_len:
+            break
+        off = i + 9
+        vid = struct.unpack_from("<Q", wm, off + 1)[0]
+        x, y, z = struct.unpack_from("<fff", wm, off + 21)
+        pos = i + 42
+        if not (-8192.0 <= x <= 8192.0 and -8192.0 <= y <= 8192.0):
+            continue
+        gbs_name = t3_docs.get(str(vid), "")
+        if not gbs_name or "PROXY" in gbs_name:
+            continue
+        parts = gbs_name.split("_")
+        pref = parts[1] if len(parts) >= 2 else ""
+        prov_id = _DOC_PREFIX_TO_PROVINCE.get(pref)
+        if not prov_id:
+            continue
+        u = round(max(0.01, min(0.99, (x + 8192.0) / 16384.0)), 4)
+        v = round(max(0.01, min(0.99, 1.0 - (y + 8192.0) / 16384.0)), 4)
+        doc_records.append({
+            "vid": int(vid),
+            "gbs_name": gbs_name,
+            "province": prov_id,
+            "u": u,
+            "v": v,
+            "x": round(x, 1),
+            "y": round(y, 1),
+            "z": round(z, 1),
+        })
+
+    doc_records.sort(key=lambda r: (r["province"], r["gbs_name"]))
+    prov_doc_counts: dict[str, int] = {}
+    for r in doc_records:
+        pr = r["province"]
+        idx = prov_doc_counts.get(pr, 0) + 1
+        prov_doc_counts[pr] = idx
+        r["id"] = f"ks_{pr}_{idx:02d}"
+    out["documents"] = doc_records
+
+    # 2. Pontos de Habilidade e Medalhas Bônus (classe Anvil 0xB3B2A583)
+    skill_records: list[dict[str, Any]] = []
+    medal_records: list[dict[str, Any]] = []
+    pos = 0
+    sig_loot = b"\xf8\x00\x00\x00\x00\x83\xa5\xb2\xb3"
+    while True:
+        i = wm.find(sig_loot, pos)
+        if i == -1 or i + 74 > wm_len:
+            break
+        off = i + 9
+        x, y, z = struct.unpack_from("<fff", wm, off)
+        vid = struct.unpack_from("<Q", wm, off + 16)[0]
+        q1 = struct.unpack_from("<Q", wm, off + 33)[0]
+        t0, _t1, t2 = struct.unpack_from("<3I", wm, off + 53)
+        pos = i + 74
+        if not (-8192.0 <= x <= 8192.0 and -8192.0 <= y <= 8192.0):
+            continue
+        pnum = int(t2 >> 8)
+        prov_id = _WM_PNUM_TO_PROVINCE.get(pnum)
+        if not prov_id:
+            continue
+        u = round(max(0.01, min(0.99, (x + 8192.0) / 16384.0)), 4)
+        v = round(max(0.01, min(0.99, 1.0 - (y + 8192.0) / 16384.0)), 4)
+        loot_name = t4_loot.get(str(q1), "")
+        if t0 == 1536:
+            skill_records.append({
+                "vid": int(vid),
+                "province": prov_id,
+                "tier": loot_name,
+                "u": u,
+                "v": v,
+                "x": round(x, 1),
+                "y": round(y, 1),
+                "z": round(z, 1),
+            })
+        elif t0 == 1280:
+            medal_records.append({
+                "vid": int(vid),
+                "province": prov_id,
+                "gbs_name": loot_name,
+                "u": u,
+                "v": v,
+                "x": round(x, 1),
+                "y": round(y, 1),
+                "z": round(z, 1),
+            })
+
+    skill_records.sort(key=lambda r: (r["province"], r["v"], r["u"]))
+    prov_skill_counts: dict[str, int] = {}
+    for r in skill_records:
+        pr = r["province"]
+        idx = prov_skill_counts.get(pr, 0) + 1
+        prov_skill_counts[pr] = idx
+        r["id"] = f"skill_{pr}_{idx:02d}"
+    out["skill_points"] = skill_records
+    out["medals"] = medal_records
+    return out
 
 
 def _build_forge_ids_index(forge: ForgeArchive, game_dir: Path | None = None) -> dict[str, Any]:
@@ -283,16 +504,20 @@ def _build_forge_ids_index(forge: ForgeArchive, game_dir: Path | None = None) ->
             if len(parts) >= 2:
                 collectibles_fids.setdefault(parts[1], []).append(int(e["fid"]))
 
-    t1_missions, t2_items = _extract_gbs_tables(game_dir, fallback_forge=forge)
+    t1_missions, t2_items, t3_docs, t4_loot = _extract_gbs_tables(game_dir, fallback_forge=forge)
+    wm_collectibles = _extract_worldmap_collectibles(game_dir, t3_docs, t4_loot)
 
     return {
-        "version": 2,
+        "version": 4,
         "weapons": weapons_fids,
         "attachments": atts_fids,
         "provinces": provinces_fids,
         "collectible_fids": collectibles_fids,
         "table1_missions": t1_missions,
         "table2_items": t2_items,
+        "table3_docs": t3_docs,
+        "table4_loot": t4_loot,
+        "wm_collectibles": wm_collectibles,
     }
 
 
@@ -368,6 +593,7 @@ def ensure_cache_built(
             if not extracted:
                 _render_fallback_icon(cid, cat["color"], out_icon)
 
+        wm_collectibles_data: dict[str, Any] | None = None
         if forge is not None:
             for key, tex_name in FORGE_CLASS_ICON_MAP.items():
                 out_cls = ICONS_CACHE_DIR / f"{key}.png"
@@ -384,14 +610,20 @@ def ensure_cache_built(
                 progress_cb(72, "Indexing Anvil unlock & province IDs...")
             try:
                 forge_ids = _build_forge_ids_index(forge, game_dir=game_dir)
+                wm_collectibles_data = forge_ids.get("wm_collectibles")
                 FORGE_IDS_PATH.write_text(json.dumps(forge_ids, ensure_ascii=False), encoding="utf-8")
             except Exception:
                 pass
+        elif FORGE_IDS_PATH.is_file():
+            try:
+                wm_collectibles_data = json.loads(FORGE_IDS_PATH.read_text(encoding="utf-8")).get("wm_collectibles")
+            except Exception:
+                wm_collectibles_data = None
 
         if progress_cb:
             progress_cb(85, "Building tactical catalog, compatibility & cartel DB...")
 
-        map_data, catalog_data, cartel_data = build_static_databases(lang)
+        map_data, catalog_data, cartel_data = build_static_databases(lang, wm_collectibles=wm_collectibles_data)
         MAP_DATA_PATH.write_text(json.dumps(map_data, ensure_ascii=False), encoding="utf-8")
         CATALOG_PATH.write_text(json.dumps(catalog_data, ensure_ascii=False), encoding="utf-8")
         CARTEL_PATH.write_text(json.dumps(cartel_data, ensure_ascii=False), encoding="utf-8")

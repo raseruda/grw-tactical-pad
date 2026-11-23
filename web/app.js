@@ -163,6 +163,9 @@
     if ($("map-nearby")) {
       $("map-nearby").classList.toggle("hidden", !p.nearbyOpen);
     }
+    if ($("btn-nearby")) {
+      $("btn-nearby").classList.toggle("active", Boolean(p.nearbyOpen));
+    }
 
     // Selects & sliders
     $("sel-weapon-override").value = p.weaponOverrideClass || "auto";
@@ -356,8 +359,9 @@
     $("btn-new-marker").addEventListener("click", () => openMarkerEditor(mapCtrl.camU, mapCtrl.camV));
     $("btn-nearby").addEventListener("click", () => {
       STATE.prefs.nearbyOpen = !STATE.prefs.nearbyOpen;
+      STATE.prefs.nearbyManuallyClosed = !STATE.prefs.nearbyOpen;
       applyPrefsToControls();
-      if (STATE.prefs.nearbyOpen) renderNearbyDrawer();
+      if (STATE.prefs.nearbyOpen) renderNearbyDrawer(true);
       scheduleSavePrefs(true);
     });
     $("btn-sim-demo").addEventListener("click", toggleDemoSimulation);
@@ -621,7 +625,7 @@
     if (hasRisk) playRiskBeep(isCrit);
 
     if (mapCtrl) mapCtrl.setLive(live);
-    if (!$("map-nearby").classList.contains("hidden")) renderNearbyDrawer();
+    if (!$("map-nearby").classList.contains("hidden")) renderNearbyDrawer(false);
   }
 
   function renderCategoryList() {
@@ -635,7 +639,7 @@
         <label class="cat-item">
           <span class="cat-left">
             <input type="checkbox" class="chk-cat" data-cat="${c.id}" ${checked ? "checked" : ""} />
-            <img class="cat-icon" src="/api/icon/${c.id}.png?v=3" alt="" onerror="this.style.display='none'" />
+            <img class="cat-icon" src="/api/icon/${c.id}.png?v=4" alt="" onerror="this.style.display='none'" />
             <span>${c.name}</span>
           </span>
           <span class="cat-count">${counts[c.id] || 0}</span>
@@ -756,48 +760,232 @@
     }
   }
 
-  function renderNearbyDrawer() {
+  const DEFAULT_NEARBY_CATS = [
+    "weapon_case",
+    "attachment_case",
+    "bonus_medal",
+    "skill_point",
+    "kingslayer",
+    "rebel_op",
+    "mission",
+  ];
+
+  const NEARBY_FILTER_DEFS = [
+    { id: "weapon_case", i18nKey: "nearby.cat.weapon_case" },
+    { id: "attachment_case", i18nKey: "nearby.cat.attachment_case" },
+    { id: "bonus_medal", i18nKey: "nearby.cat.bonus_medal" },
+    { id: "skill_point", i18nKey: "nearby.cat.skill_point" },
+    { id: "kingslayer", i18nKey: "nearby.cat.kingslayer" },
+    { id: "rebel_op", i18nKey: "nearby.cat.rebel_op" },
+    { id: "mission", i18nKey: "nearby.cat.mission" },
+    { id: "bases", i18nKey: "nearby.cat.bases" },
+    { id: "rally_point", i18nKey: "nearby.cat.rally_point" },
+    { id: "enemies", i18nKey: "nearby.cat.enemies" },
+    { id: "allies_rebels", i18nKey: "nearby.cat.allies_rebels" },
+  ];
+
+  let _nearbyLastRenderMs = 0;
+  let _nearbyMouseDown = false;
+  let _nearbyRowsCache = [];
+
+  function _getActiveNearbyCats() {
+    const arr = Array.isArray(STATE.prefs.nearbyCats) ? STATE.prefs.nearbyCats : DEFAULT_NEARBY_CATS;
+    return new Set(arr);
+  }
+
+  function _ensureNearbyDrawerDOM(box) {
+    if (box.dataset.initialized === "1" && $("nearby-list") && $("nearby-filters")) {
+      const titleEl = $("nearby-title-text");
+      if (titleEl) titleEl.textContent = `📡 ${GhostI18n.t("toolbar.nearby")}`;
+      return;
+    }
+    box.dataset.initialized = "1";
+    box.innerHTML = `
+      <div class="modal-head" id="nearby-header">
+        <h3 id="nearby-title-text">📡 ${GhostI18n.t("toolbar.nearby")}</h3>
+        <button type="button" class="icon-btn" id="btn-close-nearby" title="Fechar">✕</button>
+      </div>
+      <div class="nearby-filters" id="nearby-filters"></div>
+      <div class="nearby-list" id="nearby-list"></div>
+    `;
+    box.addEventListener("pointerdown", () => { _nearbyMouseDown = true; });
+    window.addEventListener("pointerup", () => { _nearbyMouseDown = false; });
+
+    const closeBtn = $("btn-close-nearby");
+    const closeHandler = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      STATE.prefs.nearbyOpen = false;
+      STATE.prefs.nearbyManuallyClosed = true;
+      box.classList.add("hidden");
+      applyPrefsToControls();
+      scheduleSavePrefs(true);
+    };
+    closeBtn.addEventListener("pointerdown", closeHandler);
+    closeBtn.addEventListener("click", closeHandler);
+
+    $("nearby-filters").addEventListener("click", (ev) => {
+      const chip = ev.target.closest(".nearby-chip[data-ncat]");
+      if (!chip) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const cid = chip.dataset.ncat;
+      const cur = _getActiveNearbyCats();
+      if (cur.has(cid)) cur.delete(cid);
+      else cur.add(cid);
+      STATE.prefs.nearbyCats = Array.from(cur);
+      scheduleSavePrefs(true);
+      renderNearbyDrawer(true);
+    });
+
+    $("nearby-list").addEventListener("click", (ev) => {
+      const itemEl = ev.target.closest(".nearby-item[data-idx]");
+      if (!itemEl) return;
+      const r = _nearbyRowsCache[Number(itemEl.dataset.idx)];
+      if (!r) return;
+      STATE.prefs.followPlayer = false;
+      applyPrefsToControls();
+      mapCtrl.focusUV(r.u, r.v, 0.9);
+      if (r.poi) showPoiDetail(r.poi);
+    });
+  }
+
+  function renderNearbyDrawer(force = true) {
     const box = $("map-nearby");
-    if (box.classList.contains("hidden") || !STATE.mapData) return;
+    if (!box || box.classList.contains("hidden") || !STATE.mapData) return;
+    _ensureNearbyDrawerDOM(box);
+
+    const now = performance.now();
+    if (!force && (_nearbyMouseDown || (now - _nearbyLastRenderMs) < 350)) {
+      return;
+    }
+    _nearbyLastRenderMs = now;
+
+    const activeCats = _getActiveNearbyCats();
+    const filtersBox = $("nearby-filters");
+    if (filtersBox) {
+      filtersBox.innerHTML = NEARBY_FILTER_DEFS.map((f) => `
+        <button type="button" class="nearby-chip ${activeCats.has(f.id) ? "active" : ""}" data-ncat="${f.id}">
+          ${activeCats.has(f.id) ? "✔ " : ""}${GhostI18n.t(f.i18nKey)}
+        </button>
+      `).join("");
+    }
+
     const p = (STATE.live && STATE.live.player) || { u: mapCtrl.camU, v: mapCtrl.camV };
     const span = (mapCtrl && mapCtrl.worldBounds && (mapCtrl.worldBounds.max_x - mapCtrl.worldBounds.min_x)) || 16384;
+    const maxDist = Math.max(850, Number(STATE.prefs.assistRadius || 350) * 3.0);
+    const donePois = new Set((STATE.progress && STATE.progress.completed_pois) || []);
+    const doneItems = new Set((STATE.progress && STATE.progress.collected_items) || []);
+    const doneMissions = new Set((STATE.progress && STATE.progress.completed_missions) || []);
+    const hideCompleted = Boolean(STATE.prefs.hideCompleted);
     const rows = [];
-    for (const en of ((STATE.live && STATE.live.enemies) || [])) {
-      const d = Math.hypot((en.u - p.u) * span, (en.v - p.v) * span);
-      rows.push({ kind: "enemy", name: `${en.faction.toUpperCase()} (${en.alert})`, dist: d, u: en.u, v: en.v });
-    }
-    for (const poi of STATE.mapData.pois) {
-      const d = Math.hypot((poi.u - p.u) * span, (poi.v - p.v) * span);
-      if (d <= Number(STATE.prefs.assistRadius || 350) * 2.5) {
-        rows.push({ kind: "poi", name: poi.name, sub: poi.province_name, dist: d, u: poi.u, v: poi.v, poi });
+
+    if (activeCats.has("enemies")) {
+      for (const en of ((STATE.live && STATE.live.enemies) || [])) {
+        const d = Math.hypot((en.u - p.u) * span, (en.v - p.v) * span);
+        rows.push({
+          kind: "enemy",
+          name: `${GhostI18n.t(`faction.${en.faction}`)} (${GhostI18n.t(`alert.state${en.alert ? en.alert.charAt(0).toUpperCase() + en.alert.slice(1) : "Unaware"}`)})`,
+          sub: GhostI18n.t("nearby.cat.enemies"),
+          dist: d,
+          u: en.u,
+          v: en.v,
+          isDone: false,
+        });
       }
     }
+
+    if (activeCats.has("allies_rebels")) {
+      for (const al of ((STATE.live && STATE.live.allies) || [])) {
+        const d = Math.hypot((al.u - p.u) * span, (al.v - p.v) * span);
+        rows.push({
+          kind: "ally",
+          name: al.name || "Ghost",
+          sub: GhostI18n.t("faction.ghost"),
+          dist: d,
+          u: al.u,
+          v: al.v,
+          isDone: false,
+        });
+      }
+      for (const rb of ((STATE.live && STATE.live.rebels) || [])) {
+        const d = Math.hypot((rb.u - p.u) * span, (rb.v - p.v) * span);
+        rows.push({
+          kind: "rebel",
+          name: GhostI18n.t("faction.rebel"),
+          sub: GhostI18n.t("nearby.cat.allies_rebels"),
+          dist: d,
+          u: rb.u,
+          v: rb.v,
+          isDone: false,
+        });
+      }
+    }
+
+    if (activeCats.has("mission") && STATE.cartel && Array.isArray(STATE.cartel.provinces)) {
+      for (const prov of STATE.cartel.provinces) {
+        for (const ms of (prov.missions || [])) {
+          const isDone = doneMissions.has(ms.id);
+          if (hideCompleted && isDone) continue;
+          const d = Math.hypot((ms.u - p.u) * span, (ms.v - p.v) * span);
+          if (d <= maxDist) {
+            rows.push({
+              kind: "mission",
+              name: ms.name,
+              sub: `${GhostI18n.t("cartel.missionsLabel")} · ${prov.name}`,
+              dist: d,
+              u: ms.u,
+              v: ms.v,
+              isDone,
+            });
+          }
+        }
+      }
+    }
+
+    const baseCats = new Set(["sb_base", "unidad_base", "sam_site", "jammer"]);
+    for (const poi of STATE.mapData.pois) {
+      const cat = poi.cat;
+      let match = false;
+      if (baseCats.has(cat)) {
+        match = activeCats.has("bases");
+      } else if (cat === "boss_hq") {
+        match = activeCats.has("mission");
+      } else {
+        match = activeCats.has(cat);
+      }
+      if (!match) continue;
+      const isDone = donePois.has(poi.id) || (poi.item_id && doneItems.has(poi.item_id));
+      if (hideCompleted && isDone) continue;
+      const d = Math.hypot((poi.u - p.u) * span, (poi.v - p.v) * span);
+      if (d <= maxDist) {
+        rows.push({
+          kind: "poi",
+          name: poi.name,
+          sub: poi.province_name,
+          dist: d,
+          u: poi.u,
+          v: poi.v,
+          poi,
+          isDone,
+        });
+      }
+    }
+
     rows.sort((a, b) => a.dist - b.dist);
-    box.innerHTML = `
-      <div class="modal-head">
-        <h3>📡 ${GhostI18n.t("toolbar.nearby")}</h3>
-        <button class="icon-btn" id="btn-close-nearby">✕</button>
-      </div>
-      ${rows.slice(0, 20).map((r, i) => `
-        <div class="nearby-item" data-idx="${i}">
-          <div style="display:flex;justify-content:space-between">
-            <strong>${r.name}</strong>
-            <span class="accent">${Math.round(r.dist)} m</span>
+    _nearbyRowsCache = rows.slice(0, 25);
+    const listBox = $("nearby-list");
+    if (listBox) {
+      listBox.innerHTML = _nearbyRowsCache.map((r, i) => `
+        <div class="nearby-item ${r.isDone ? "done" : ""}" data-idx="${i}">
+          <div style="display:flex;justify-content:space-between;gap:6px;align-items:center">
+            <strong style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.isDone ? "✔ " : ""}${r.name}</strong>
+            <span class="accent mono" style="white-space:nowrap">${Math.round(r.dist)} m</span>
           </div>
           ${r.sub ? `<div class="muted" style="font-size:11px">${r.sub}</div>` : ""}
         </div>
-      `).join("") || `<div class="muted">—</div>`}
-    `;
-    $("btn-close-nearby").onclick = () => box.classList.add("hidden");
-    box.querySelectorAll(".nearby-item").forEach((el) => {
-      el.onclick = () => {
-        const r = rows[Number(el.dataset.idx)];
-        STATE.prefs.followPlayer = false;
-        applyPrefsToControls();
-        mapCtrl.focusUV(r.u, r.v, 0.9);
-        if (r.poi) showPoiDetail(r.poi);
-      };
-    });
+      `).join("") || `<div class="muted" style="padding:8px 2px">—</div>`;
+    }
   }
 
   function renderWikiGrid() {
@@ -1277,6 +1465,7 @@
       if (curProv) showProvinceDetail(curProv);
     }
     applyPrefsToControls();
+    if (STATE.prefs.nearbyOpen) renderNearbyDrawer(true);
   }
 
   function connectStream() {

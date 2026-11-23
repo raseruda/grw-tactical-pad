@@ -283,9 +283,10 @@ class GRWLiveReader:
         chars = []
         for i in range(MAX_CHARS):
             c = st.chars[i]
-            if c.skel_ptr == 0 or (now_ms - c.last_seen_ms) > 2500:
+            if c.skel_ptr == 0 or (now_ms - c.last_seen_ms) > 3000:
                 continue
             vt_rva = (int(c.npc_vtable) - mod_base) if (c.npc_vtable and mod_base and c.npc_vtable > mod_base) else 0
+            ent_d0 = int(c.ent_u32[31])
             chars.append({
                 "slot": i,
                 "skel": hex(c.skel_ptr),
@@ -298,6 +299,7 @@ class GRWLiveReader:
                 "is_player": int(c.is_player_comp),
                 "faction_raw": int(c.faction_raw),
                 "faction_1e8": int(c.faction_1e8),
+                "ent_d0": hex(ent_d0),
                 "alert_raw": int(c.alert_raw),
                 "alert_328": int(c.alert_328),
                 "age_ms": now_ms - int(c.last_seen_ms),
@@ -366,21 +368,38 @@ class GRWLiveReader:
         if (local_ent and c.entity_ptr == local_ent) or (local_skel and c.skel_ptr == local_skel):
             return "player"
 
-        fac_enum = EFACTION_MAP.get(int(c.faction_raw)) or EFACTION_MAP.get(int(c.faction_1e8))
+        # Combina facção de Entity::GetFaction (ent + 0xD0 bits 10..13) e subcomponentes de GR_cNPCComponent
+        ent_d0 = int(c.ent_u32[31])
+        d0_bits = (ent_d0 >> 10) & 0x0F
+        fac_d0 = EFACTION_MAP.get(d0_bits - 1) if 1 <= d0_bits <= 8 else None
+        fac_0 = EFACTION_MAP.get(int(c.faction_raw))
+        fac_1 = EFACTION_MAP.get(int(c.faction_1e8))
+
+        fac_enum: str | None = None
+        for cand in (fac_0, fac_1, fac_d0):
+            if cand and cand != "civilian":
+                fac_enum = cand
+                break
+        if fac_enum is None:
+            for cand in (fac_0, fac_1, fac_d0):
+                if cand == "civilian":
+                    fac_enum = "civilian"
+                    break
+
         # Nunca usa player_vtable para Co-op (todos os personagens Anvil compartilham a mesma vtable de Entity)
         if (int(c.is_player_comp) != 0 or (c.entity_ptr in coop_entities)) and fac_enum in (None, "ghost"):
             return "ally_coop"
 
         if fac_enum == "ghost":
             return "ally_ai"
-        if fac_enum == "civilian":
-            return "civilian"
         if fac_enum == "rebel":
             return "rebel"
         if fac_enum == "unidad":
             return "enemy_unidad"
         if fac_enum == "santa_blanca":
             return "enemy_sb"
+        if fac_enum == "civilian":
+            return "civilian"
 
         vt_rva = (int(c.npc_vtable) - module_base) if (c.npc_vtable and module_base and c.npc_vtable > module_base) else 0
         if vt_rva in CIVILIAN_NPC_VTABLE_RVAS:
@@ -507,7 +526,7 @@ class GRWLiveReader:
         active_slots: list[GRWCharSlot] = []
         for i in range(MAX_CHARS):
             c = st.chars[i]
-            if c.skel_ptr == 0 or (now_ms - int(c.last_seen_ms)) > 1000:
+            if c.skel_ptr == 0 or (now_ms - int(c.last_seen_ms)) > 2800:
                 continue
             if not (c.valid_flags & 1):
                 continue
@@ -654,7 +673,7 @@ class GRWLiveReader:
                 continue
 
             alert_state = self._resolve_alert(c)
-            if alert_state == "down":
+            if alert_state == "down" or ((int(c.ent_u32[31]) & 0x300) == 0x200):
                 continue
 
             rx, ry, rz = float(c.root_pos[0]), float(c.root_pos[1]), float(c.root_pos[2])
@@ -662,7 +681,7 @@ class GRWLiveReader:
                 continue
             ehx, ehy, ehz = float(c.head_pos[0]), float(c.head_pos[1]), float(c.head_pos[2])
             w = weapon_by_owner.get(int(c.entity_ptr)) or weapon_by_owner.get(int(c.skel_ptr))
-            if (ehz - rz) < 0.30 and w is None:
+            if (ehz - rz) < 0.22 and w is None and kind not in ("rebel", "ally_ai", "ally_coop"):
                 continue
 
             hq = (float(c.head_quat[0]), float(c.head_quat[1]), float(c.head_quat[2]), float(c.head_quat[3]))

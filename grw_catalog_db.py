@@ -712,18 +712,38 @@ ATTACHMENTS_DB: list[dict[str, Any]] = [
     _att("att_vv_grip", "Vertical Foregrip", "underbarrel", ["ar", "smg", "lmg"], "villa_verde", "Villa Verde South Camp", "Acampamento Sul de Villa Verde", 0.692, 0.488, "+Accuracy, +Handling", "+Precisão, +Manuseio", forge_patterns=["WG_AT_foregrip_V3"]),
 ]
 
-# Medalhas de Bônus (passivas permanentes!)
+# Medalhas de Bônus (todas as 30 medalhas passivas permanentes verificadas no GRN_WorldMap / Game Bootstrap Settings)
 BONUS_MEDALS: list[dict[str, Any]] = [
-    {"id": "med_stamina", "kind": "medal", "name_en": "Physical Training Medal (Stamina)", "name_pt": "Medalha de Treinamento Físico (Estamina)", "province": "itacua", "location_en": "Itacua North Ruins", "location_pt": "Ruínas Norte de Itacua", "u": 0.508, "v": 0.602, "bonus_en": "+25% Stamina capacity", "bonus_pt": "+25% de capacidade de Estamina"},
-    {"id": "med_drone_range", "kind": "medal", "name_en": "Tech Specialist Medal (Drone Range)", "name_pt": "Medalha Especialista Tech (Alcance do Drone)", "province": "agua_verde", "location_en": "Agua Verde South Dock", "location_pt": "Doca Sul de Agua Verde", "u": 0.492, "v": 0.322, "bonus_en": "+25% Drone Signal Range", "bonus_pt": "+25% de Alcance do Drone"},
-    {"id": "med_detection", "kind": "medal", "name_en": "Stealth Medal (Enemy Detection)", "name_pt": "Medalha de Furtividade (Detecção)", "province": "ocoro", "location_en": "Ocoro River Shrine", "location_pt": "Santuário do Rio Ocoro", "u": 0.542, "v": 0.482, "bonus_en": "Slows enemy visual detection speed", "bonus_pt": "Reduz velocidade de detecção visual inimiga"},
-    {"id": "med_ammo", "kind": "medal", "name_en": "Munitions Medal (Ammo Capacity)", "name_pt": "Medalha de Munição (Capacidade)", "province": "montuyoc", "location_en": "Montuyoc Training Bunker", "location_pt": "Bunker de Treinamento de Montuyoc", "u": 0.205, "v": 0.678, "bonus_en": "+25% Max Reserve Ammo", "bonus_pt": "+25% de Munição Reserva Máxima"},
-    {"id": "med_explosion", "kind": "medal", "name_en": "Ordnance Medal (Blast Radius)", "name_pt": "Medalha de Artilharia (Raio Explosivo)", "province": "koani", "location_en": "Koani Airfield Tower", "location_pt": "Torre do Aeródromo de Koani", "u": 0.142, "v": 0.118, "bonus_en": "+25% Explosive Blast Radius", "bonus_pt": "+25% de Raio de Explosão"},
-    {"id": "med_quiet_run", "kind": "medal", "name_en": "Quiet Running Medal", "name_pt": "Medalha de Corrida Silenciosa", "province": "espiritu_santo", "location_en": "Espíritu Santo Ridge Camp", "location_pt": "Acampamento da Crista de Espíritu Santo", "u": 0.788, "v": 0.162, "bonus_en": "-25% Footstep Noise", "bonus_pt": "-25% de Ruído ao Correr"},
-    {"id": "med_revive", "kind": "medal", "name_en": "Medic Medal (Revive Speed)", "name_pt": "Medalha Médica (Velocidade de Reanimação)", "province": "caimanes", "location_en": "Caimanes Field Hospital", "location_pt": "Hospital de Campanha de Caimanes", "u": 0.852, "v": 0.495, "bonus_en": "+25% Teammate Revive Speed", "bonus_pt": "+25% de Velocidade de Reanimação"},
-    {"id": "med_vehicle_armor", "kind": "medal", "name_en": "Armored Convoy Medal", "name_pt": "Medalha de Blindagem Veicular", "province": "flor_de_oro", "location_en": "Flor de Oro Unidad Depot", "location_pt": "Depósito da Unidad de Flor de Oro", "u": 0.772, "v": 0.858, "bonus_en": "+25% Vehicle Armor", "bonus_pt": "+25% de Blindagem de Veículos"},
-    {"id": "med_stable_aim", "kind": "medal", "name_en": "Sharpshooter Medal (Stable Aim)", "name_pt": "Medalha de Atirador de Elite", "province": "media_luna", "location_en": "Media Luna Canyon Outpost", "location_pt": "Posto do Cânion de Media Luna", "u": 0.318, "v": 0.118, "bonus_en": "-25% Weapon Sway", "bonus_pt": "-25% de Oscilação da Mira"},
-    {"id": "med_thermal", "kind": "medal", "name_en": "Recon Medal (Binocular Zoom)", "name_pt": "Medalha de Reconhecimento (Binóculos)", "province": "tabacal", "location_en": "Tabacal Lookout", "location_pt": "Mirante de Tabacal", "u": 0.528, "v": 0.132, "bonus_en": "+25% Binocular & Drone Battery", "bonus_pt": "+25% de Bateria de Drone/Binóculos"},
+    {"id": "med_air_vhc_dmg", "vid": 565442030236, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_AirVHCDamage", "kind": "medal", "name_en": "Aircraft Destruction Medal", "name_pt": "Medalha de Destruição Aérea", "province": "barvechos", "location_en": "Barvechos Northwest Outpost", "location_pt": "Posto Noroeste de Barvechos", "u": 0.2598, "v": 0.385, "bonus_en": "+20% Damage to Aircraft", "bonus_pt": "+20% de Dano contra Aeronaves"},
+    {"id": "med_ammo", "vid": 894883027816, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_AmmoCapacity", "kind": "medal", "name_en": "Munitions Medal (Ammo Capacity)", "name_pt": "Medalha de Munição (Capacidade)", "province": "barvechos", "location_en": "Barvechos West Mine", "location_pt": "Mina Oeste de Barvechos", "u": 0.2614, "v": 0.4315, "bonus_en": "+25% Max Reserve Ammo", "bonus_pt": "+25% de Munição Reserva Máxima"},
+    {"id": "med_c4", "vid": 557284981349, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_C4", "kind": "medal", "name_en": "Demolitions Medal (C4 Capacity)", "name_pt": "Medalha de Demolição (Capacidade C4)", "province": "koani", "location_en": "Koani West Salt Flats", "location_pt": "Salar Oeste de Koani", "u": 0.0805, "v": 0.0952, "bonus_en": "+2 Extra C4 Charges", "bonus_pt": "+2 Cargas Extras de C4"},
+    {"id": "med_car_dmg", "vid": 557284981350, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_CarDamage", "kind": "medal", "name_en": "Anti-Convoy Medal (Vehicle Damage)", "name_pt": "Medalha Anticomboio (Dano Veicular)", "province": "koani", "location_en": "Koani East Train Graveyard", "location_pt": "Cemitério de Trens de Koani", "u": 0.2402, "v": 0.1027, "bonus_en": "+20% Damage to Ground Vehicles", "bonus_pt": "+20% de Dano contra Veículos Terrestres"},
+    {"id": "med_drone_mark", "vid": 702366581357, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_DroneMarkArea", "kind": "medal", "name_en": "Drone Recon Medal (Mark Area)", "name_pt": "Medalha de Reconhecimento de Drone", "province": "media_luna", "location_en": "Media Luna North Ridge", "location_pt": "Crista Norte de Media Luna", "u": 0.2956, "v": 0.0914, "bonus_en": "+50% Drone Marking Cone", "bonus_pt": "+50% de Área de Marcação do Drone"},
+    {"id": "med_flare", "vid": 758868234459, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_Flare", "kind": "medal", "name_en": "Signal Flare Medal", "name_pt": "Medalha de Sinalizador", "province": "media_luna", "location_en": "Media Luna South Canyon", "location_pt": "Cânion Sul de Media Luna", "u": 0.357, "v": 0.2191, "bonus_en": "+2 Extra Flares", "bonus_pt": "+2 Sinalizadores Extras"},
+    {"id": "med_drone_range", "vid": 565442030375, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_DroneRange", "kind": "medal", "name_en": "Tech Specialist Medal (Drone Range)", "name_pt": "Medalha Especialista Tech (Alcance do Drone)", "province": "mojocoyo", "location_en": "Mojocoyo Northwest Camp", "location_pt": "Acampamento Noroeste de Mojocoyo", "u": 0.1413, "v": 0.2949, "bonus_en": "+25% Drone Signal Range", "bonus_pt": "+25% de Alcance do Drone"},
+    {"id": "med_flash", "vid": 565442030381, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_FlashGrenade", "kind": "medal", "name_en": "Breacher Medal (Flashbang)", "name_pt": "Medalha de Invasão (Granada deLuz)", "province": "mojocoyo", "location_en": "Mojocoyo North Base", "location_pt": "Base Norte de Mojocoyo", "u": 0.1883, "v": 0.2766, "bonus_en": "+2 Extra Flashbang Grenades", "bonus_pt": "+2 Granadas de Luz Extras"},
+    {"id": "med_hipfire", "vid": 647264435473, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_HipFire", "kind": "medal", "name_en": "Close Quarters Medal (Hip Fire)", "name_pt": "Medalha CQB (Tiro Livre)", "province": "montuyoc", "location_en": "Montuyoc West Bunker", "location_pt": "Bunker Oeste de Montuyoc", "u": 0.1292, "v": 0.6017, "bonus_en": "-20% Hip-Fire Spread", "bonus_pt": "-20% de Dispersão em Tiro Livre"},
+    {"id": "med_squad_res", "vid": 580754923830, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_SquadResilience", "kind": "medal", "name_en": "Squad Resilience Medal", "name_pt": "Medalha de Resiliência do Esquadrão", "province": "remanzo", "location_en": "Remanzo Valley Compound", "location_pt": "Complexo do Vale de Remanzo", "u": 0.2494, "v": 0.3075, "bonus_en": "+25% AI Teammate Health", "bonus_pt": "+25% de Resistência dos Aliados"},
+    {"id": "med_stable_aim", "vid": 548390523313, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_StableAiming", "kind": "medal", "name_en": "Sharpshooter Medal (Stable Aim)", "name_pt": "Medalha de Atirador de Elite (Mira Estável)", "province": "san_mateo", "location_en": "San Mateo East Watchtower", "location_pt": "Torre Leste de San Mateo", "u": 0.3777, "v": 0.3599, "bonus_en": "-25% Weapon Sway", "bonus_pt": "-25% de Oscilação da Mira"},
+    {"id": "med_time_aim", "vid": 556371017062, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_TimeToAim", "kind": "medal", "name_en": "Quick Draw Medal (ADS Speed)", "name_pt": "Medalha de Saque Rápido (Velocidade de Mira)", "province": "tabacal", "location_en": "Tabacal North Plantation", "location_pt": "Plantação Norte de Tabacal", "u": 0.5766, "v": 0.0946, "bonus_en": "+20% Aim Down Sights Speed", "bonus_pt": "+20% de Velocidade ao Mirar"},
+    {"id": "med_bino_mark", "vid": 553387872434, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_BinocularMarkArea", "kind": "medal", "name_en": "Spotter Medal (Binocular Area)", "name_pt": "Medalha de Observador (Binóculos)", "province": "caimanes", "location_en": "Caimanes South Swamp Base", "location_pt": "Base Sul do Pântano de Caimanes", "u": 0.7897, "v": 0.5897, "bonus_en": "+50% Binocular Marking Cone", "bonus_pt": "+50% de Área de Marcação dos Binóculos"},
+    {"id": "med_quiet_run", "vid": 1055056516419, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_SilentRunning", "kind": "medal", "name_en": "Quiet Running Medal", "name_pt": "Medalha de Corrida Silenciosa", "province": "espiritu_santo", "location_en": "Espíritu Santo East Ridge", "location_pt": "Crista Leste de Espíritu Santo", "u": 0.8324, "v": 0.1456, "bonus_en": "-25% Footstep Noise", "bonus_pt": "-25% de Ruído ao Correr"},
+    {"id": "med_thermal", "vid": 535924038003, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_BinocularZoom", "kind": "medal", "name_en": "Recon Medal (Binocular Zoom)", "name_pt": "Medalha de Reconhecimento (Zoom Binóculos)", "province": "flor_de_oro", "location_en": "Flor de Oro South FOB", "location_pt": "FOB Sul de Flor de Oro", "u": 0.7627, "v": 0.8942, "bonus_en": "+2x Binocular Zoom Level", "bonus_pt": "+2x de Zoom nos Binóculos"},
+    {"id": "med_born_leader", "vid": 563505218278, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_BornLeader", "kind": "medal", "name_en": "Born Leader Medal", "name_pt": "Medalha Líder Nato", "province": "itacua", "location_en": "Itacua North Ruins", "location_pt": "Ruínas Norte de Itacua", "u": 0.5066, "v": 0.6028, "bonus_en": "+20% Squad Combat Efficiency", "bonus_pt": "+20% de Eficiência do Esquadrão"},
+    {"id": "med_bullet_res", "vid": 647884648840, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_BulletResist", "kind": "medal", "name_en": "Ballistic Vest Medal (Bullet Resistance)", "name_pt": "Medalha de Proteção Balística", "province": "itacua", "location_en": "Itacua Northeast Outpost", "location_pt": "Posto Nordeste de Itacua", "u": 0.543, "v": 0.5562, "bonus_en": "+10% Bullet Damage Resistance", "bonus_pt": "+10% de Resistência a Disparos"},
+    {"id": "med_detection", "vid": 553387872494, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_Detection", "kind": "medal", "name_en": "Stealth Medal (Enemy Detection)", "name_pt": "Medalha de Furtividade (Detecção)", "province": "la_cruz", "location_en": "La Cruz East Ridge", "location_pt": "Crista Leste de La Cruz", "u": 0.7989, "v": 0.746, "bonus_en": "Slows enemy visual detection speed", "bonus_pt": "Reduz velocidade de detecção visual inimiga"},
+    {"id": "med_diversion", "vid": 554164921902, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_DiversionGrenade", "kind": "medal", "name_en": "Deception Medal (Diversion Lure)", "name_pt": "Medalha de Distração (Isca Sonora)", "province": "libertad", "location_en": "Libertad Central Outpost", "location_pt": "Posto Central de Libertad", "u": 0.8383, "v": 0.7971, "bonus_en": "+2 Extra Diversion Lures", "bonus_pt": "+2 Granadas de Distração Extras"},
+    {"id": "med_drone_armor", "vid": 554164921908, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_DroneArmor", "kind": "medal", "name_en": "Armored Drone Medal", "name_pt": "Medalha de Blindagem do Drone", "province": "libertad", "location_en": "Libertad Southeast Border", "location_pt": "Fronteira Sudeste de Libertad", "u": 0.8747, "v": 0.9398, "bonus_en": "+50% Drone Durability", "bonus_pt": "+50% de Resistência do Drone"},
+    {"id": "med_explosion", "vid": 568996212235, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_ExplosionResistance", "kind": "medal", "name_en": "Flak Jacket Medal (Blast Resistance)", "name_pt": "Medalha Antiexplosão", "province": "malca", "location_en": "Malca Shrine Hill", "location_pt": "Colina do Santuário de Malca", "u": 0.6079, "v": 0.8393, "bonus_en": "+20% Explosion Damage Resistance", "bonus_pt": "+20% de Resistência a Explosões"},
+    {"id": "med_drone_speed", "vid": 556371017240, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_DroneSpeed", "kind": "medal", "name_en": "High-Speed Drone Medal", "name_pt": "Medalha de Velocidade do Drone", "province": "monte_puncu", "location_en": "Monte Puncu North Relay", "location_pt": "Antena Norte de Monte Puncu", "u": 0.6916, "v": 0.1517, "bonus_en": "+25% Drone Flight Speed", "bonus_pt": "+25% de Velocidade do Drone"},
+    {"id": "med_frag", "vid": 904007965557, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_FragGrenade", "kind": "medal", "name_en": "Grenadier Medal (Frag Capacity)", "name_pt": "Medalha de Granadeiro (Fragmentação)", "province": "monte_puncu", "location_en": "Monte Puncu Northwest Valley", "location_pt": "Vale Noroeste de Monte Puncu", "u": 0.6375, "v": 0.1094, "bonus_en": "+2 Extra Frag Grenades", "bonus_pt": "+2 Granadas de Fragmentação Extras"},
+    {"id": "med_mine", "vid": 538107133074, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_Mine", "kind": "medal", "name_en": "Sapper Medal (Mine Capacity)", "name_pt": "Medalha de Sapador (Minas)", "province": "ocoro", "location_en": "Ocoro North River Camp", "location_pt": "Acampamento Norte do Rio Ocoro", "u": 0.5624, "v": 0.3704, "bonus_en": "+2 Extra Mines", "bonus_pt": "+2 Minas Terrestres Extras"},
+    {"id": "med_rebel_icon", "vid": 648457331000, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_RebelIcon", "kind": "medal", "name_en": "Kataris 26 Medal (Rebel Support)", "name_pt": "Medalha Kataris 26 (Apoio Rebelde)", "province": "agua_verde", "location_en": "Agua Verde East Island", "location_pt": "Ilha Leste de Agua Verde", "u": 0.5631, "v": 0.2681, "bonus_en": "-20% Rebel Support Cooldown", "bonus_pt": "-20% de Recarga de Apoio Rebelde"},
+    {"id": "med_no_pain", "vid": 648458011036, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_NoPain", "kind": "medal", "name_en": "Endurance Medal (Pain Suppression)", "name_pt": "Medalha de Vigor (Supressão de Dor)", "province": "agua_verde", "location_en": "Agua Verde Central Resort", "location_pt": "Resort Central de Agua Verde", "u": 0.5044, "v": 0.2779, "bonus_en": "+25% Health Regeneration Speed", "bonus_pt": "+25% de Velocidade de Regeneração"},
+    {"id": "med_revive", "vid": 567831377574, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_ReviveSpeed", "kind": "medal", "name_en": "Medic Medal (Revive Speed)", "name_pt": "Medalha Médica (Velocidade de Reanimação)", "province": "pucara", "location_en": "Pucara Dam Outpost", "location_pt": "Posto da Represa de Pucara", "u": 0.3834, "v": 0.704, "bonus_en": "+25% Teammate Revive Speed", "bonus_pt": "+25% de Velocidade de Reanimação"},
+    {"id": "med_vehicle_armor", "vid": 543318942909, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_VHCDestruction", "kind": "medal", "name_en": "Heavy Ordnance Medal (Vehicle Destruction)", "name_pt": "Medalha de Artilharia Pesada (Destruição Veicular)", "province": "villa_verde", "location_en": "Villa Verde Northeast Jungle", "location_pt": "Selva Nordeste de Villa Verde", "u": 0.9289, "v": 0.1282, "bonus_en": "+25% Vehicle & Turret Damage", "bonus_pt": "+25% de Dano contra Blindados"},
+    {"id": "med_drone_cd", "vid": 543318942910, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_DroneCooldown", "kind": "medal", "name_en": "Drone Battery Medal (Cooldown)", "name_pt": "Medalha de Bateria de Drone (Recarga)", "province": "villa_verde", "location_en": "Villa Verde North Quarry", "location_pt": "Pedreira Norte de Villa Verde", "u": 0.8744, "v": 0.2271, "bonus_en": "-25% Drone Cooldown", "bonus_pt": "-25% de Tempo de Recarga do Drone"},
+    {"id": "med_bleedout", "vid": 903029104411, "gbs_name": "DBLootConfig_SpecificBonusUpgrade_BleedOutTime", "kind": "medal", "name_en": "Survivor Medal (Bleed Out Time)", "name_pt": "Medalha de Sobrevivência (Tempo de Sangramento)", "province": "inca_camina", "location_en": "Inca Camina South Peak", "location_pt": "Pico Sul de Inca Camina", "u": 0.286, "v": 0.808, "bonus_en": "+50% Bleed Out Time Before Death", "bonus_pt": "+50% de Tempo para Reanimação"},
 ]
 
 # Categorias do Mapa Tático (12 categorias GRW com ícones oficiais)
@@ -731,14 +751,14 @@ MAP_CATEGORIES: list[dict[str, Any]] = [
     {"id": "weapon_case", "name_en": "Weapon Cases", "name_pt": "Caixas de Armas", "color": "#f59e0b", "icon": "weapon_case"},
     {"id": "attachment_case", "name_en": "Weapon Attachments", "name_pt": "Acessórios de Arma", "color": "#38bdf8", "icon": "attachment_case"},
     {"id": "bonus_medal", "name_en": "Bonus Medals", "name_pt": "Medalhas de Bônus", "color": "#eab308", "icon": "bonus_medal"},
+    {"id": "skill_point", "name_en": "Skill Points", "name_pt": "Pontos de Habilidade", "color": "#34d399", "icon": "skill_point"},
+    {"id": "kingslayer", "name_en": "Documents (Kingslayer Files)", "name_pt": "Documentos (Kingslayer)", "color": "#cbd5e1", "icon": "kingslayer"},
+    {"id": "rebel_op", "name_en": "Rebel Ops & Intel", "name_pt": "Operações & Informações", "color": "#22c55e", "icon": "rebel_op"},
     {"id": "sb_base", "name_en": "Santa Blanca Bases", "name_pt": "Bases Santa Blanca", "color": "#d4a017", "icon": "sb_base"},
     {"id": "unidad_base", "name_en": "Unidad Fortresses", "name_pt": "Fortalezas Unidad", "color": "#9333ea", "icon": "unidad_base"},
     {"id": "sam_site", "name_en": "SAM Launchers", "name_pt": "Baterias SAM", "color": "#fb7185", "icon": "sam_site"},
     {"id": "jammer", "name_en": "Drone Jammers", "name_pt": "Bloqueadores de Drone", "color": "#f43f5e", "icon": "jammer"},
-    {"id": "rebel_op", "name_en": "Rebel Ops", "name_pt": "Operações Rebeldes", "color": "#22c55e", "icon": "rebel_op"},
     {"id": "rally_point", "name_en": "Rally Points (Fast Travel)", "name_pt": "Pontos de Encontro", "color": "#60a5fa", "icon": "rally_point"},
-    {"id": "skill_point", "name_en": "Skill Points", "name_pt": "Pontos de Habilidade", "color": "#34d399", "icon": "skill_point"},
-    {"id": "kingslayer", "name_en": "Kingslayer Files", "name_pt": "Arquivos Kingslayer", "color": "#cbd5e1", "icon": "kingslayer"},
     {"id": "boss_hq", "name_en": "Buchón / Cartel Bosses", "name_pt": "Chefes / Buchones", "color": "#dc2626", "icon": "boss_hq"},
 ]
 
@@ -759,13 +779,18 @@ def _is_attachment_compatible(weapon: dict[str, Any], attachment: dict[str, Any]
     return True
 
 
-def build_static_databases(lang: str = "pt-BR") -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+def build_static_databases(
+    lang: str = "pt-BR",
+    wm_collectibles: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Gera map_data, catalog (com compatibilidade bidirecional) e cartel (com missões e tarefas por província)."""
     is_pt = lang.lower().startswith("pt")
     prov_by_id = {p["id"]: p for p in PROVINCES}
     slot_labels = {s["id"]: (s["label_pt"] if is_pt else s["label_en"]) for s in ATTACHMENT_SLOTS}
     class_labels = {c["id"]: (c["label_pt"] if is_pt else c["label_en"]) for c in WEAPON_CLASSES}
     pois: list[dict[str, Any]] = []
+    wm_docs = list((wm_collectibles or {}).get("documents") or [])
+    wm_skills = list((wm_collectibles or {}).get("skill_points") or [])
 
     # 1. Prepara armas e acessórios localizados
     catalog_weapons: list[dict[str, Any]] = []
@@ -897,10 +922,25 @@ def build_static_databases(lang: str = "pt-BR") -> tuple[dict[str, Any], dict[st
             "u": m["u"],
             "v": m["v"],
             "item_id": m["id"],
+            "vid": m.get("vid"),
+            "gbs_name": m.get("gbs_name"),
             "desc": f"{loc} — {bon}",
         })
 
-    # 4. Bases, Pontos de Encontro, SAMs, Jammers, Rebel Ops & Bosses por província
+    # 3b. Documentos (Kingslayer Files) e Pontos de Habilidade extraídos do GRN_WorldMap (com fallback sintético caso offline)
+    docs_by_prov: dict[str, list[dict[str, Any]]] = {}
+    for d in wm_docs:
+        pr = str(d.get("province") or "")
+        if pr in prov_by_id:
+            docs_by_prov.setdefault(pr, []).append(d)
+
+    skills_by_prov: dict[str, list[dict[str, Any]]] = {}
+    for sp in wm_skills:
+        pr = str(sp.get("province") or "")
+        if pr in prov_by_id:
+            skills_by_prov.setdefault(pr, []).append(sp)
+
+    # 4. Bases, Pontos de Encontro, SAMs, Jammers, Rebel Ops, Documentos & Pontos de Habilidade por província
     for idx, p in enumerate(PROVINCES):
         pid = p["id"]
         u, v = p["u"], p["v"]
@@ -934,26 +974,69 @@ def build_static_databases(lang: str = "pt-BR") -> tuple[dict[str, Any], dict[st
             "v": round(max(0.03, min(0.97, v + 0.016)), 4),
             "desc": ("Suporte Rebelde (Morteiro / Avistamento / Veículo / Distração)" if is_pt else "Rebel Support Unlock (Mortar / Spotting / Vehicle / Diversion)"),
         })
-        pois.append({
-            "id": f"skill_{pid}",
-            "cat": "skill_point",
-            "name": f"{'Ponto de Habilidade' if is_pt else 'Skill Point'} ({p['name']})",
-            "province": pid,
-            "province_name": p["name"],
-            "u": round(max(0.03, min(0.97, u - 0.012)), 4),
-            "v": round(max(0.03, min(0.97, v + 0.020)), 4),
-            "desc": ("+1/+3/+5 Pontos de Habilidade" if is_pt else "Skill Points Cache"),
-        })
-        pois.append({
-            "id": f"ks_{pid}",
-            "cat": "kingslayer",
-            "name": f"{'Arquivo Kingslayer' if is_pt else 'Kingslayer File'} — {p['name']}",
-            "province": pid,
-            "province_name": p["name"],
-            "u": round(max(0.03, min(0.97, u + 0.015)), 4),
-            "v": round(max(0.03, min(0.97, v - 0.018)), 4),
-            "desc": ("Dossiê de inteligência sobre o cartel e a região" if is_pt else "Cartel & regional intelligence dossier"),
-        })
+
+        p_skills = skills_by_prov.get(pid) or []
+        if p_skills:
+            for s_idx, sp in enumerate(p_skills, 1):
+                tier = str(sp.get("tier") or "")
+                pts_txt = "+5" if "Hard" in tier else ("+3" if "Medium" in tier else "+1")
+                pois.append({
+                    "id": str(sp.get("id") or f"skill_{pid}_{s_idx:02d}"),
+                    "cat": "skill_point",
+                    "name": f"{'Ponto de Habilidade' if is_pt else 'Skill Point'} #{s_idx:02d} ({pts_txt})",
+                    "province": pid,
+                    "province_name": p["name"],
+                    "u": float(sp["u"]),
+                    "v": float(sp["v"]),
+                    "vid": sp.get("vid"),
+                    "desc": f"{p['name']} — {pts_txt} {'Pontos de Habilidade' if is_pt else 'Skill Points'}",
+                })
+        else:
+            pois.append({
+                "id": f"skill_{pid}",
+                "cat": "skill_point",
+                "name": f"{'Ponto de Habilidade' if is_pt else 'Skill Point'} ({p['name']})",
+                "province": pid,
+                "province_name": p["name"],
+                "u": round(max(0.03, min(0.97, u - 0.012)), 4),
+                "v": round(max(0.03, min(0.97, v + 0.020)), 4),
+                "desc": ("+1/+3/+5 Pontos de Habilidade" if is_pt else "Skill Points Cache"),
+            })
+
+        p_docs = docs_by_prov.get(pid) or []
+        if p_docs:
+            for d_idx, doc in enumerate(p_docs, 1):
+                gbs_nm = str(doc.get("gbs_name") or "")
+                is_leg = "_LEG_" in gbs_nm
+                if is_pt:
+                    d_title = f"Lenda Boliviana #{d_idx:02d} — {p['name']}" if is_leg else f"Documento Kingslayer #{d_idx:02d} — {p['name']}"
+                    d_desc = f"Lenda regional ({gbs_nm})" if is_leg else f"Arquivo da Op. Regicida / Dossiê ({gbs_nm})"
+                else:
+                    d_title = f"Bolivian Legend #{d_idx:02d} — {p['name']}" if is_leg else f"Kingslayer Document #{d_idx:02d} — {p['name']}"
+                    d_desc = f"Regional Legend ({gbs_nm})" if is_leg else f"Kingslayer File / Intel Dossier ({gbs_nm})"
+                pois.append({
+                    "id": str(doc.get("id") or f"ks_{pid}_{d_idx:02d}"),
+                    "cat": "kingslayer",
+                    "name": d_title,
+                    "province": pid,
+                    "province_name": p["name"],
+                    "u": float(doc["u"]),
+                    "v": float(doc["v"]),
+                    "vid": doc.get("vid"),
+                    "gbs_name": gbs_nm,
+                    "desc": d_desc,
+                })
+        else:
+            pois.append({
+                "id": f"ks_{pid}",
+                "cat": "kingslayer",
+                "name": f"{'Documento Kingslayer' if is_pt else 'Kingslayer Document'} — {p['name']}",
+                "province": pid,
+                "province_name": p["name"],
+                "u": round(max(0.03, min(0.97, u + 0.015)), 4),
+                "v": round(max(0.03, min(0.97, v - 0.018)), 4),
+                "desc": ("Dossiê de inteligência sobre o cartel e a região" if is_pt else "Cartel & regional intelligence dossier"),
+            })
         if p["skulls"] >= 3 or pid in ("itacua", "agua_verde", "barvechos"):
             pois.append({
                 "id": f"uni_{pid}",
@@ -1047,6 +1130,8 @@ def build_static_databases(lang: str = "pt-BR") -> tuple[dict[str, Any], dict[st
                 "id": m["id"],
                 "item_id": m["id"],
                 "poi_id": f"poi_{m['id']}",
+                "vid": m.get("vid"),
+                "gbs_name": m.get("gbs_name"),
                 "cat": "bonus_medal",
                 "name": m["name"],
                 "location": m["location"],
@@ -1063,6 +1148,8 @@ def build_static_databases(lang: str = "pt-BR") -> tuple[dict[str, Any], dict[st
                     "id": poi["id"],
                     "item_id": poi.get("item_id"),
                     "poi_id": poi["id"],
+                    "vid": poi.get("vid"),
+                    "gbs_name": poi.get("gbs_name"),
                     "cat": poi["cat"],
                     "name": poi["name"],
                     "location": poi.get("desc", ""),

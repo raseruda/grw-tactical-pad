@@ -664,10 +664,10 @@ static void read_bone_world(uint64_t buf, int idx, int is_world, const float roo
 static void link_npc_entity(uint64_t ent, uint64_t npc, uint64_t vt, uint64_t now_ms) {{
     if (!ptr_ok(ent) || !ptr_ok(npc)) return;
     uint32_t idx = (uint32_t)((ent >> 5) & (MAX_NPC_LINKS - 1));
-    for (int p = 0; p < 16; ++p) {{
+    for (int p = 0; p < 32; ++p) {{
         uint32_t s = (idx + p) & (MAX_NPC_LINKS - 1);
         if (g_npc_links[s].entity_ptr == ent || g_npc_links[s].entity_ptr == 0 ||
-            (now_ms - g_npc_links[s].last_seen_ms) > 4000ULL) {{
+            (now_ms - g_npc_links[s].last_seen_ms) > 30000ULL) {{
             g_npc_links[s].entity_ptr = ent;
             g_npc_links[s].npc_ptr = npc;
             g_npc_links[s].npc_vtable = vt;
@@ -680,7 +680,7 @@ static void link_npc_entity(uint64_t ent, uint64_t npc, uint64_t vt, uint64_t no
 static int find_npc_link(uint64_t ent, uint64_t *out_npc, uint64_t *out_vt) {{
     if (!ptr_ok(ent)) return 0;
     uint32_t idx = (uint32_t)((ent >> 5) & (MAX_NPC_LINKS - 1));
-    for (int p = 0; p < 16; ++p) {{
+    for (int p = 0; p < 32; ++p) {{
         uint32_t s = (idx + p) & (MAX_NPC_LINKS - 1);
         if (g_npc_links[s].entity_ptr == ent) {{
             *out_npc = g_npc_links[s].npc_ptr;
@@ -701,11 +701,34 @@ static void read_npc_faction_alert(uint64_t npc, GRWCharSlot *slot) {{
     __try {{
         uint64_t fsub = *(const uint64_t *)(npc + 0x258);
         if (ptr_ok(fsub)) {{
-            slot->faction_raw = *(const int32_t *)(fsub + 0x10C);
+            int32_t f0 = *(const int32_t *)(fsub + 0x10C);
+            if (f0 >= 0 && f0 <= 7) slot->faction_raw = f0;
         }}
         uint64_t sub1e8 = *(const uint64_t *)(npc + 0x1E8);
         if (ptr_ok(sub1e8)) {{
-            slot->faction_1e8 = *(const int32_t *)(sub1e8 + 0x120);
+            int32_t f1 = *(const int32_t *)(sub1e8 + 0x120);
+            if (f1 >= 0 && f1 <= 7) slot->faction_1e8 = f1;
+        }}
+        /* Subcomponentes adicionais de GR_cNPCComponent verificados em GRW.exe (0x27d7f3a) */
+        static const struct {{ uint16_t sub_off; uint16_t val_off; }} k_fsubs[7] = {{
+            {{ 0x1F8u, 0x190u }},
+            {{ 0x210u, 0x168u }},
+            {{ 0x288u, 0x150u }},
+            {{ 0x310u, 0x060u }},
+            {{ 0x380u, 0x09Cu }},
+            {{ 0x390u, 0x170u }},
+            {{ 0x418u, 0x0A0u }},
+        }};
+        for (int k = 0; k < 7; ++k) {{
+            if (slot->faction_raw > 0 && slot->faction_1e8 > 0) break;
+            uint64_t psub = *(const uint64_t *)(npc + k_fsubs[k].sub_off);
+            if (ptr_ok(psub)) {{
+                int32_t fk = *(const int32_t *)(psub + k_fsubs[k].val_off);
+                if (fk >= 1 && fk <= 7) {{
+                    if (slot->faction_raw <= 0) slot->faction_raw = fk;
+                    else if (slot->faction_1e8 <= 0) slot->faction_1e8 = fk;
+                }}
+            }}
         }}
         uint64_t asub1 = *(const uint64_t *)(npc + 0x320);
         if (ptr_ok(asub1)) {{
@@ -1004,10 +1027,10 @@ static void record_skeleton(uint64_t skel) {{
         uint64_t now_ms = GetTickCount64();
         uint32_t idx = (uint32_t)((skel >> 5) & (MAX_CHARS - 1));
         GRWCharSlot *slot = NULL;
-        for (int p = 0; p < 16; ++p) {{
+        for (int p = 0; p < 32; ++p) {{
             uint32_t s = (idx + p) & (MAX_CHARS - 1);
             if (g_telemetry.chars[s].skel_ptr == skel || g_telemetry.chars[s].skel_ptr == 0 ||
-                (now_ms - g_telemetry.chars[s].last_seen_ms) > 3000ULL) {{
+                (now_ms - g_telemetry.chars[s].last_seen_ms) > 4500ULL) {{
                 slot = &g_telemetry.chars[s];
                 break;
             }}
@@ -1073,10 +1096,24 @@ static void record_skeleton(uint64_t skel) {{
             slot->faction_1e8 = -1;
             slot->alert_328 = -1;
         }}
-        if (first_or_periodic && ptr_ok(ent)) {{
-            slot->entity_vtable = *(const uint64_t *)ent;
-            const uint32_t *eu = (const uint32_t *)ent;
-            for (int k = 0; k < 32; ++k) slot->ent_u32[k] = eu[k];
+        if (ptr_ok(ent)) {{
+            /* Entity::GetFaction (GRW.exe 0x00A179E0 -> 0x0A490390): bits 10..13 de *(uint32_t*)(ent + 0xD0) - 1 = eFaction (0..7) */
+            uint32_t ent_d0 = *(const uint32_t *)(ent + 0xD0);
+            uint32_t fbits = (ent_d0 >> 10) & 0x0Fu;
+            if (fbits >= 1u && fbits <= 8u) {{
+                int32_t ent_fac = (int32_t)(fbits - 1u);
+                if (slot->faction_raw < 0 || (slot->faction_raw == 0 && ent_fac > 0)) {{
+                    slot->faction_raw = ent_fac;
+                }} else if (slot->faction_1e8 < 0 || (slot->faction_1e8 == 0 && ent_fac > 0)) {{
+                    slot->faction_1e8 = ent_fac;
+                }}
+            }}
+            if (first_or_periodic) {{
+                slot->entity_vtable = *(const uint64_t *)ent;
+                const uint32_t *eu = (const uint32_t *)ent;
+                for (int k = 0; k < 31; ++k) slot->ent_u32[k] = eu[k];
+            }}
+            slot->ent_u32[31] = ent_d0;
         }}
         slot->last_seen_ms = now_ms;
     }} __except (EXCEPTION_EXECUTE_HANDLER) {{

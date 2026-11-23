@@ -254,7 +254,7 @@ window.GhostMap = (() => {
         const img = new Image();
         rec = { img, loaded: false };
         img.onload = () => { rec.loaded = true; this._needsRedraw = true; };
-        img.src = `/api/icon/${name}.png?v=3`;
+        img.src = `/api/icon/${name}.png?v=4`;
         this.iconCache.set(name, rec);
       }
       return rec;
