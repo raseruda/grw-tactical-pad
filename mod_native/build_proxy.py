@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 BUILD_DIR = Path(__file__).resolve().parent / "build"
 RELEASE_DIR = ROOT_DIR / "mod_release"
-RELEASE_ZIP = ROOT_DIR / "GhostPad_GRW_v1.0.0.zip"
+RELEASE_ZIP = ROOT_DIR / "GhostPad_GRW_v1.1.0.zip"
 SYSTEM_WINMM = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "winmm.dll"
 VCVARS64 = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat")
 
@@ -41,6 +41,7 @@ PY_SOURCE_FILES = (
     "grw_catalog_db.py",
     "grw_asset_builder.py",
     "grw_memory.py",
+    "grw_save_sync.py",
     "tactical_engine.py",
     "server.py",
     "launcher.py",
@@ -54,6 +55,9 @@ TU25_THUNKS = (
     ("SkeletonPostUpdate", 0x01899110, 0x0F6D9800),
     ("cPlayerComponent_OnInit", 0x02752340, 0x139AE870),
     ("weapon_update", 0x029FB1C0, 0x1483DE80),
+    ("GR_cNPC_vt2", 0x026BC090, 0x137732D0),
+    ("GR_cNPC_vt8", 0x026C7E00, 0x137BDCE0),
+    ("GR_cNPC_vt5_OnEvent", 0x02611EB0, 0x13148FE0),
 )
 
 
@@ -232,6 +236,9 @@ def generate_sources(exports: list[tuple[int, str | None]]) -> None:
 #define MAX_CHARS 512
 #define MAX_WEAPONS 64
 #define MAX_RIG_CACHE 64
+#define MAX_NPC_LINKS 1024
+#define MAX_SAVE_TRACKS 16
+#define MAX_LIVE_SAVE_BYTES (4u * 1024u * 1024u)
 
 #ifndef LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
 #define LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR 0x00000100
@@ -270,6 +277,8 @@ typedef struct GRWCharSlot {{
     uint64_t pose_ptr;
     uint64_t entity_vtable;
     uint64_t last_seen_ms;
+    uint64_t npc_ptr;
+    uint64_t npc_vtable;
     uint32_t bone_count;
     uint32_t rig_map_count;
     int32_t head_idx;
@@ -278,6 +287,12 @@ typedef struct GRWCharSlot {{
     int32_t hips_idx;
     uint32_t pose_flags;
     uint32_t valid_flags;
+    int32_t faction_raw;
+    int32_t alert_raw;
+    int32_t faction_1e8;
+    int32_t alert_328;
+    uint32_t is_player_comp;
+    uint32_t _pad_npc;
     float root_pos[4];
     float root_quat[4];
     float head_pos[4];
@@ -294,6 +309,7 @@ typedef struct GRWWeaponSlot {{
     uint64_t gun_root_owner;
     uint64_t muzzle_owner;
     uint64_t attachment_holder;
+    uint64_t muzzle_stuff;
     uint64_t last_seen_ms;
     uint32_t weapon_category;
     uint32_t shoot_mode;
@@ -313,10 +329,15 @@ typedef struct GRWTelemetryState {{
     uint32_t hooks_mask;
     uint32_t build_matched;
     uint64_t frame_tick;
-    uint64_t hook_calls[8];
+    uint64_t hook_calls[16];
     uint64_t local_player_comp;
     uint64_t local_player_entity;
     uint64_t local_player_skel;
+    uint64_t player_entities[8];
+    uint32_t player_entity_count;
+    uint32_t save_read_seq;
+    uint32_t save_write_seq;
+    uint32_t last_save_slot;
     uint64_t cam_ptr;
     uint32_t cam_mode;
     uint32_t cam_valid;
@@ -332,7 +353,7 @@ typedef struct GRWTelemetryState {{
 }} GRWTelemetryState;
 #pragma pack(pop)
 
-static GRWTelemetryState g_telemetry = {{ 0x47525754u, 1u }};
+static GRWTelemetryState g_telemetry = {{ 0x47525754u, 2u }};
 
 typedef struct RigBoneCache {{
     uint64_t rig_ptr;
@@ -345,6 +366,15 @@ typedef struct RigBoneCache {{
 }} RigBoneCache;
 
 static RigBoneCache g_rig_cache[MAX_RIG_CACHE] = {{0}};
+
+typedef struct NpcLink {{
+    uint64_t entity_ptr;
+    uint64_t npc_ptr;
+    uint64_t npc_vtable;
+    uint64_t last_seen_ms;
+}} NpcLink;
+
+static NpcLink g_npc_links[MAX_NPC_LINKS] = {{0}};
 
 typedef struct ThunkSpec {{
     const char *name;
@@ -361,6 +391,38 @@ static uint8_t g_saved_thunks[NUM_PROBES][16];
 static uint8_t *g_patched_addrs[NUM_PROBES] = {{0}};
 static int g_patched_ok[NUM_PROBES] = {{0}};
 static wchar_t g_mod_dir[MAX_PATH * 2] = {{0}};
+
+typedef int (__cdecl *PFN_UPLAY_SAVE_Open)(uint32_t slot_id, uint32_t mode, uint32_t *out_handle, void *overlapped);
+typedef int (__cdecl *PFN_UPLAY_SAVE_Close)(uint32_t handle);
+typedef int (__cdecl *PFN_UPLAY_SAVE_Read)(uint32_t handle, uint32_t bytes_to_read, uint32_t offset, void **buf_ptr, uint32_t *out_bytes_read, void *overlapped);
+typedef int (__cdecl *PFN_UPLAY_SAVE_Write)(uint32_t handle, uint32_t bytes_to_write, void **buf_ptr, void *overlapped);
+
+static PFN_UPLAY_SAVE_Open  g_orig_save_open  = NULL;
+static PFN_UPLAY_SAVE_Close g_orig_save_close = NULL;
+static PFN_UPLAY_SAVE_Read  g_orig_save_read  = NULL;
+static PFN_UPLAY_SAVE_Write g_orig_save_write = NULL;
+static uint64_t *g_iat_save_open  = NULL;
+static uint64_t *g_iat_save_close = NULL;
+static uint64_t *g_iat_save_read  = NULL;
+static uint64_t *g_iat_save_write = NULL;
+
+typedef struct SaveTrack {{
+    int in_use;
+    uint32_t handle;
+    uint32_t slot_id;
+    uint32_t mode;
+    uint8_t *pending_buf;
+    uint32_t pending_off;
+    uint32_t pending_req;
+    uint32_t *pending_out_len;
+    uint32_t max_len;
+    uint8_t *buf;
+    uint32_t cap;
+}} SaveTrack;
+
+static CRITICAL_SECTION g_save_cs;
+static int g_save_cs_init = 0;
+static SaveTrack g_save_tracks[MAX_SAVE_TRACKS] = {{0}};
 
 static void init_real_winmm(void) {{
     if (g_real_winmm) return;
@@ -599,6 +661,323 @@ static void read_bone_world(uint64_t buf, int idx, int is_world, const float roo
     }}
 }}
 
+static void link_npc_entity(uint64_t ent, uint64_t npc, uint64_t vt, uint64_t now_ms) {{
+    if (!ptr_ok(ent) || !ptr_ok(npc)) return;
+    uint32_t idx = (uint32_t)((ent >> 5) & (MAX_NPC_LINKS - 1));
+    for (int p = 0; p < 16; ++p) {{
+        uint32_t s = (idx + p) & (MAX_NPC_LINKS - 1);
+        if (g_npc_links[s].entity_ptr == ent || g_npc_links[s].entity_ptr == 0 ||
+            (now_ms - g_npc_links[s].last_seen_ms) > 4000ULL) {{
+            g_npc_links[s].entity_ptr = ent;
+            g_npc_links[s].npc_ptr = npc;
+            g_npc_links[s].npc_vtable = vt;
+            g_npc_links[s].last_seen_ms = now_ms;
+            break;
+        }}
+    }}
+}}
+
+static int find_npc_link(uint64_t ent, uint64_t *out_npc, uint64_t *out_vt) {{
+    if (!ptr_ok(ent)) return 0;
+    uint32_t idx = (uint32_t)((ent >> 5) & (MAX_NPC_LINKS - 1));
+    for (int p = 0; p < 16; ++p) {{
+        uint32_t s = (idx + p) & (MAX_NPC_LINKS - 1);
+        if (g_npc_links[s].entity_ptr == ent) {{
+            *out_npc = g_npc_links[s].npc_ptr;
+            *out_vt = g_npc_links[s].npc_vtable;
+            return 1;
+        }}
+        if (g_npc_links[s].entity_ptr == 0) break;
+    }}
+    return 0;
+}}
+
+static void read_npc_faction_alert(uint64_t npc, GRWCharSlot *slot) {{
+    slot->faction_raw = -1;
+    slot->alert_raw = -1;
+    slot->faction_1e8 = -1;
+    slot->alert_328 = -1;
+    if (!ptr_ok(npc)) return;
+    __try {{
+        uint64_t fsub = *(const uint64_t *)(npc + 0x258);
+        if (ptr_ok(fsub)) {{
+            slot->faction_raw = *(const int32_t *)(fsub + 0x10C);
+        }}
+        uint64_t sub1e8 = *(const uint64_t *)(npc + 0x1E8);
+        if (ptr_ok(sub1e8)) {{
+            slot->faction_1e8 = *(const int32_t *)(sub1e8 + 0x120);
+        }}
+        uint64_t asub1 = *(const uint64_t *)(npc + 0x320);
+        if (ptr_ok(asub1)) {{
+            slot->alert_raw = *(const int32_t *)(asub1 + 0x0F0);
+        }}
+        uint64_t asub2 = *(const uint64_t *)(npc + 0x328);
+        if (ptr_ok(asub2)) {{
+            slot->alert_328 = *(const int32_t *)(asub2 + 0x0C4);
+        }}
+    }} __except (EXCEPTION_EXECUTE_HANDLER) {{
+    }}
+}}
+
+static void record_npc(uint64_t npc) {{
+    if (!ptr_ok(npc)) return;
+    __try {{
+        uint64_t ent = *(const uint64_t *)(npc + 0x10);
+        if (!ptr_ok(ent)) return;
+        uint64_t vt = *(const uint64_t *)npc;
+        uint64_t now_ms = GetTickCount64();
+        link_npc_entity(ent, npc, vt, now_ms);
+    }} __except (EXCEPTION_EXECUTE_HANDLER) {{
+    }}
+}}
+
+static void write_live_save_file(uint32_t slot_id, const uint8_t *buf, uint32_t len, int is_write) {{
+    if (!g_mod_dir[0] || !buf || len == 0 || len > MAX_LIVE_SAVE_BYTES) return;
+    wchar_t data_dir[MAX_PATH * 2];
+    wchar_t saves_dir[MAX_PATH * 2];
+    wchar_t tmp_path[MAX_PATH * 2];
+    wchar_t dst_path[MAX_PATH * 2];
+    swprintf_s(data_dir, MAX_PATH * 2, L"%ls\\\\data", g_mod_dir);
+    CreateDirectoryW(data_dir, NULL);
+    swprintf_s(saves_dir, MAX_PATH * 2, L"%ls\\\\live_saves", data_dir);
+    CreateDirectoryW(saves_dir, NULL);
+    swprintf_s(tmp_path, MAX_PATH * 2, L"%ls\\\\slot_%u.tmp", saves_dir, slot_id);
+    swprintf_s(dst_path, MAX_PATH * 2, L"%ls\\\\slot_%u.bin", saves_dir, slot_id);
+    HANDLE hf = CreateFileW(tmp_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hf != INVALID_HANDLE_VALUE) {{
+        DWORD written = 0;
+        BOOL ok = WriteFile(hf, buf, (DWORD)len, &written, NULL);
+        CloseHandle(hf);
+        if (ok && written == (DWORD)len) {{
+            MoveFileExW(tmp_path, dst_path, MOVEFILE_REPLACE_EXISTING);
+            g_telemetry.last_save_slot = slot_id;
+            if (is_write) g_telemetry.save_write_seq++;
+            else g_telemetry.save_read_seq++;
+        }} else {{
+            DeleteFileW(tmp_path);
+        }}
+    }}
+}}
+
+static void save_track_flush_pending(SaveTrack *t) {{
+    if (!t || !t->in_use || !t->pending_buf) return;
+    uint32_t got = 0;
+    __try {{
+        if (t->pending_out_len && ptr_ok((uint64_t)t->pending_out_len)) {{
+            got = *(t->pending_out_len);
+        }} else {{
+            got = t->pending_req;
+        }}
+        if (got > t->pending_req) got = t->pending_req;
+        if (got > 0 && got <= MAX_LIVE_SAVE_BYTES && ptr_ok((uint64_t)t->pending_buf)) {{
+            uint32_t end_off = t->pending_off + got;
+            if (end_off <= MAX_LIVE_SAVE_BYTES) {{
+                if (end_off > t->cap) {{
+                    uint32_t new_cap = (end_off + 0xFFFFu) & ~0xFFFFu;
+                    uint8_t *nb = (uint8_t *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, new_cap);
+                    if (nb) {{
+                        if (t->buf && t->max_len > 0) memcpy(nb, t->buf, t->max_len);
+                        if (t->buf) HeapFree(GetProcessHeap(), 0, t->buf);
+                        t->buf = nb;
+                        t->cap = new_cap;
+                    }}
+                }}
+                if (t->buf && end_off <= t->cap) {{
+                    memcpy(t->buf + t->pending_off, t->pending_buf, got);
+                    if (end_off > t->max_len) t->max_len = end_off;
+                }}
+            }}
+        }}
+    }} __except (EXCEPTION_EXECUTE_HANDLER) {{
+    }}
+    t->pending_buf = NULL;
+    t->pending_off = 0;
+    t->pending_req = 0;
+    t->pending_out_len = NULL;
+}}
+
+static int __cdecl hook_uplay_save_open(uint32_t slot_id, uint32_t mode, uint32_t *out_handle, void *overlapped) {{
+    int rc = g_orig_save_open ? g_orig_save_open(slot_id, mode, out_handle, overlapped) : 0;
+    if (g_save_cs_init && out_handle) {{
+        __try {{
+            uint32_t h = *out_handle;
+            EnterCriticalSection(&g_save_cs);
+            for (int i = 0; i < MAX_SAVE_TRACKS; ++i) {{
+                if (!g_save_tracks[i].in_use || g_save_tracks[i].handle == h) {{
+                    if (g_save_tracks[i].buf) HeapFree(GetProcessHeap(), 0, g_save_tracks[i].buf);
+                    memset(&g_save_tracks[i], 0, sizeof(SaveTrack));
+                    g_save_tracks[i].in_use = 1;
+                    g_save_tracks[i].handle = h;
+                    g_save_tracks[i].slot_id = slot_id;
+                    g_save_tracks[i].mode = mode;
+                    break;
+                }}
+            }}
+            LeaveCriticalSection(&g_save_cs);
+        }} __except (EXCEPTION_EXECUTE_HANDLER) {{
+        }}
+    }}
+    return rc;
+}}
+
+static int __cdecl hook_uplay_save_read(uint32_t handle, uint32_t bytes_to_read, uint32_t offset, void **buf_ptr, uint32_t *out_bytes_read, void *overlapped) {{
+    if (g_save_cs_init) {{
+        EnterCriticalSection(&g_save_cs);
+        for (int i = 0; i < MAX_SAVE_TRACKS; ++i) {{
+            if (g_save_tracks[i].in_use && g_save_tracks[i].handle == handle) {{
+                save_track_flush_pending(&g_save_tracks[i]);
+                break;
+            }}
+        }}
+        LeaveCriticalSection(&g_save_cs);
+    }}
+    int rc = g_orig_save_read ? g_orig_save_read(handle, bytes_to_read, offset, buf_ptr, out_bytes_read, overlapped) : 0;
+    if (g_save_cs_init && buf_ptr) {{
+        __try {{
+            uint8_t *raw_ptr = (uint8_t *)(*buf_ptr);
+            if (ptr_ok((uint64_t)raw_ptr) && bytes_to_read > 0 && bytes_to_read <= MAX_LIVE_SAVE_BYTES) {{
+                EnterCriticalSection(&g_save_cs);
+                for (int i = 0; i < MAX_SAVE_TRACKS; ++i) {{
+                    if (g_save_tracks[i].in_use && g_save_tracks[i].handle == handle) {{
+                        g_save_tracks[i].pending_buf = raw_ptr;
+                        g_save_tracks[i].pending_off = offset;
+                        g_save_tracks[i].pending_req = bytes_to_read;
+                        g_save_tracks[i].pending_out_len = out_bytes_read;
+                        break;
+                    }}
+                }}
+                LeaveCriticalSection(&g_save_cs);
+            }}
+        }} __except (EXCEPTION_EXECUTE_HANDLER) {{
+        }}
+    }}
+    return rc;
+}}
+
+static int __cdecl hook_uplay_save_write(uint32_t handle, uint32_t bytes_to_write, void **buf_ptr, void *overlapped) {{
+    if (g_save_cs_init && buf_ptr && bytes_to_write > 0 && bytes_to_write <= MAX_LIVE_SAVE_BYTES) {{
+        uint32_t slot_id = 0xFFFFFFFFu;
+        EnterCriticalSection(&g_save_cs);
+        for (int i = 0; i < MAX_SAVE_TRACKS; ++i) {{
+            if (g_save_tracks[i].in_use && g_save_tracks[i].handle == handle) {{
+                slot_id = g_save_tracks[i].slot_id;
+                break;
+            }}
+        }}
+        LeaveCriticalSection(&g_save_cs);
+        if (slot_id != 0xFFFFFFFFu) {{
+            uint8_t *copy = (uint8_t *)HeapAlloc(GetProcessHeap(), 0, bytes_to_write);
+            if (copy) {{
+                int ok = 0;
+                __try {{
+                    const void *src = *buf_ptr;
+                    if (ptr_ok((uint64_t)src)) {{
+                        memcpy(copy, src, bytes_to_write);
+                        ok = 1;
+                    }}
+                }} __except (EXCEPTION_EXECUTE_HANDLER) {{
+                    ok = 0;
+                }}
+                if (ok) write_live_save_file(slot_id, copy, bytes_to_write, 1);
+                HeapFree(GetProcessHeap(), 0, copy);
+            }}
+        }}
+    }}
+    return g_orig_save_write ? g_orig_save_write(handle, bytes_to_write, buf_ptr, overlapped) : 0;
+}}
+
+static int __cdecl hook_uplay_save_close(uint32_t handle) {{
+    if (g_save_cs_init) {{
+        uint32_t slot_id = 0xFFFFFFFFu;
+        uint8_t *snap = NULL;
+        uint32_t snap_len = 0;
+        EnterCriticalSection(&g_save_cs);
+        for (int i = 0; i < MAX_SAVE_TRACKS; ++i) {{
+            if (g_save_tracks[i].in_use && g_save_tracks[i].handle == handle) {{
+                save_track_flush_pending(&g_save_tracks[i]);
+                if (g_save_tracks[i].mode == 0 && g_save_tracks[i].buf && g_save_tracks[i].max_len > 0) {{
+                    slot_id = g_save_tracks[i].slot_id;
+                    snap = g_save_tracks[i].buf;
+                    snap_len = g_save_tracks[i].max_len;
+                    g_save_tracks[i].buf = NULL;
+                }} else if (g_save_tracks[i].buf) {{
+                    HeapFree(GetProcessHeap(), 0, g_save_tracks[i].buf);
+                    g_save_tracks[i].buf = NULL;
+                }}
+                g_save_tracks[i].in_use = 0;
+                break;
+            }}
+        }}
+        LeaveCriticalSection(&g_save_cs);
+        if (snap && snap_len > 0) {{
+            write_live_save_file(slot_id, snap, snap_len, 0);
+            HeapFree(GetProcessHeap(), 0, snap);
+        }}
+    }}
+    return g_orig_save_close ? g_orig_save_close(handle) : 0;
+}}
+
+static void install_uplay_save_hooks(const wchar_t *pad_dir) {{
+    HMODULE hExe = GetModuleHandleW(NULL);
+    HMODULE hUplay = GetModuleHandleW(L"uplay_r1_loader64.dll");
+    if (!hExe || !hUplay) return;
+    if (!g_save_cs_init) {{
+        InitializeCriticalSection(&g_save_cs);
+        g_save_cs_init = 1;
+    }}
+    const uint8_t *base = (const uint8_t *)hExe;
+    struct {{ uint32_t rva; const char *name; void *hook; uint64_t **slot_out; void **orig_out; }} items[4] = {{
+        {{ 0x0389D508u, "UPLAY_SAVE_Open",  (void *)&hook_uplay_save_open,  &g_iat_save_open,  (void **)&g_orig_save_open }},
+        {{ 0x0389D518u, "UPLAY_SAVE_Close", (void *)&hook_uplay_save_close, &g_iat_save_close, (void **)&g_orig_save_close }},
+        {{ 0x0389D520u, "UPLAY_SAVE_Read",  (void *)&hook_uplay_save_read,  &g_iat_save_read,  (void **)&g_orig_save_read }},
+        {{ 0x0389D528u, "UPLAY_SAVE_Write", (void *)&hook_uplay_save_write, &g_iat_save_write, (void **)&g_orig_save_write }},
+    }};
+    int hooked = 0;
+    for (int i = 0; i < 4; ++i) {{
+        FARPROC real_fn = GetProcAddress(hUplay, items[i].name);
+        uint64_t *iat_slot = (uint64_t *)(base + items[i].rva);
+        if (!real_fn) continue;
+        __try {{
+            if (*iat_slot == (uint64_t)real_fn) {{
+                DWORD old = 0;
+                if (VirtualProtect(iat_slot, sizeof(uint64_t), PAGE_READWRITE, &old)) {{
+                    *(items[i].orig_out) = (void *)real_fn;
+                    *(items[i].slot_out) = iat_slot;
+                    *iat_slot = (uint64_t)items[i].hook;
+                    VirtualProtect(iat_slot, sizeof(uint64_t), old, &old);
+                    hooked++;
+                }}
+            }}
+        }} __except (EXCEPTION_EXECUTE_HANDLER) {{
+        }}
+    }}
+    if (hooked > 0) {{
+        char msg[128];
+        _snprintf_s(msg, sizeof(msg), _TRUNCATE, "UPLAY_SAVE IAT observer installed (%d/4)", hooked);
+        log_loader_msg(pad_dir, msg);
+    }}
+}}
+
+static void remove_uplay_save_hooks(void) {{
+    struct {{ uint64_t *slot; void *orig; }} items[4] = {{
+        {{ g_iat_save_open,  (void *)g_orig_save_open }},
+        {{ g_iat_save_close, (void *)g_orig_save_close }},
+        {{ g_iat_save_read,  (void *)g_orig_save_read }},
+        {{ g_iat_save_write, (void *)g_orig_save_write }},
+    }};
+    for (int i = 0; i < 4; ++i) {{
+        if (items[i].slot && items[i].orig) {{
+            __try {{
+                DWORD old = 0;
+                if (VirtualProtect(items[i].slot, sizeof(uint64_t), PAGE_READWRITE, &old)) {{
+                    *items[i].slot = (uint64_t)items[i].orig;
+                    VirtualProtect(items[i].slot, sizeof(uint64_t), old, &old);
+                }}
+            }} __except (EXCEPTION_EXECUTE_HANDLER) {{}}
+        }}
+    }}
+}}
+
 static void record_skeleton(uint64_t skel) {{
     if (!ptr_ok(skel)) return;
     __try {{
@@ -673,6 +1052,27 @@ static void record_skeleton(uint64_t skel) {{
         if (ent && ent == g_telemetry.local_player_entity) {{
             g_telemetry.local_player_skel = skel;
         }}
+        uint32_t is_p = 0;
+        for (uint32_t pi = 0; pi < g_telemetry.player_entity_count && pi < 8u; ++pi) {{
+            if (g_telemetry.player_entities[pi] == ent && ent != 0) {{
+                is_p = 1;
+                break;
+            }}
+        }}
+        slot->is_player_comp = is_p;
+        uint64_t l_npc = 0, l_vt = 0;
+        if (find_npc_link(ent, &l_npc, &l_vt)) {{
+            slot->npc_ptr = l_npc;
+            slot->npc_vtable = l_vt;
+            read_npc_faction_alert(l_npc, slot);
+        }} else {{
+            slot->npc_ptr = 0;
+            slot->npc_vtable = 0;
+            slot->faction_raw = -1;
+            slot->alert_raw = -1;
+            slot->faction_1e8 = -1;
+            slot->alert_328 = -1;
+        }}
         if (first_or_periodic && ptr_ok(ent)) {{
             slot->entity_vtable = *(const uint64_t *)ent;
             const uint32_t *eu = (const uint32_t *)ent;
@@ -704,7 +1104,16 @@ static void record_weapon(uint64_t wcomp) {{
         slot->gun_root_idx = *(const int32_t *)(wcomp + 0xB8);
         slot->muzzle_owner = *(const uint64_t *)(wcomp + 0xC0);
         slot->muzzle_idx = *(const int32_t *)(wcomp + 0xC8);
-        slot->attachment_holder = *(const uint64_t *)(wcomp + 0xE0);
+        uint64_t holder = *(const uint64_t *)(wcomp + 0xE0);
+        slot->attachment_holder = holder;
+        uint64_t mstuff = 0;
+        if (ptr_ok(holder)) {{
+            uint64_t mslot = *(const uint64_t *)(holder + 0xA8);
+            if (ptr_ok(mslot)) {{
+                mstuff = *(const uint64_t *)(mslot + 0x40);
+            }}
+        }}
+        slot->muzzle_stuff = mstuff;
         slot->weapon_category = *(const uint32_t *)(wcomp + 0x17C);
         slot->muzzle_velocity = *(const float *)(wcomp + 0x1A0);
         slot->max_range = *(const float *)(wcomp + 0x1A4);
@@ -757,11 +1166,26 @@ void __cdecl grw_probe_record(uint64_t index, const void *saved_raw, void *retur
     }} else if (index == 3) {{ /* cPlayerComponent::OnInit callee */
         if (!ptr_ok(a->rcx)) return;
         __try {{
+            uint64_t ent = *(const uint64_t *)(a->rcx + 0x10);
             g_telemetry.local_player_comp = a->rcx;
-            g_telemetry.local_player_entity = *(const uint64_t *)(a->rcx + 0x10);
+            g_telemetry.local_player_entity = ent;
+            if (ptr_ok(ent)) {{
+                int seen = 0;
+                uint32_t cnt = g_telemetry.player_entity_count;
+                if (cnt > 8u) cnt = 8u;
+                for (uint32_t pi = 0; pi < cnt; ++pi) {{
+                    if (g_telemetry.player_entities[pi] == ent) {{ seen = 1; break; }}
+                }}
+                if (!seen && cnt < 8u) {{
+                    g_telemetry.player_entities[cnt] = ent;
+                    g_telemetry.player_entity_count = cnt + 1u;
+                }}
+            }}
         }} __except (EXCEPTION_EXECUTE_HANDLER) {{}}
     }} else if (index == 4) {{ /* weapon_update */
         record_weapon(a->rcx);
+    }} else if (index >= 5 && index <= 7) {{ /* GR_cNPCComponent hooks */
+        record_npc(a->rcx);
     }}
 }}
 
@@ -830,6 +1254,7 @@ static void install_tu25_hooks(const wchar_t *pad_dir) {{
 
 static void remove_tu25_hooks(void) {{
     g_shutting_down = 1;
+    remove_uplay_save_hooks();
     for (int i = 0; i < NUM_PROBES; ++i) {{
         if (g_patched_ok[i] && g_patched_addrs[i]) {{
             DWORD old = 0;
@@ -845,20 +1270,37 @@ static void remove_tu25_hooks(void) {{
 
 static DWORD WINAPI hook_watcher_thread(LPVOID param) {{
     (void)param;
-    for (int i = 0; i < 120 && !g_shutting_down; ++i) {{
-        if (GetModuleHandleW(L"d3d11.dll") != NULL) break;
-        Sleep(250);
-    }}
     if (!g_shutting_down) {{
-        Sleep(2500);
-        if (!g_shutting_down) install_tu25_hooks(g_mod_dir);
+        Sleep(1500);
+        if (!g_shutting_down) {{
+            install_tu25_hooks(g_mod_dir);
+            if (g_telemetry.build_matched) {{
+                install_uplay_save_hooks(g_mod_dir);
+            }}
+        }}
     }}
     return 0;
 }}
 
 static DWORD WINAPI launch_ghost_pad_thread(LPVOID param) {{
     HMODULE hSelf = (HMODULE)param;
-    Sleep(350);
+    // Aguarda d3d11.dll para garantir que esta é a instância real do jogo (e não o bootstrap da Steam/Ubisoft Connect!)
+    for (int i = 0; i < 300 && !g_shutting_down; ++i) {{
+        if (GetModuleHandleW(L"d3d11.dll") != NULL) break;
+        Sleep(200);
+    }}
+    if (g_shutting_down || GetModuleHandleW(L"d3d11.dll") == NULL) {{
+        return 0;
+    }}
+
+    g_mutex = CreateMutexW(NULL, FALSE, L"Local\\\\GRW_GhostTacticalPad_Proxy_Mutex");
+    if (!g_mutex || GetLastError() == ERROR_ALREADY_EXISTS) {{
+        if (g_mutex) {{
+            CloseHandle(g_mutex);
+            g_mutex = NULL;
+        }}
+        return 0;
+    }}
 
     wchar_t mod_path[MAX_PATH * 2];
     wchar_t game_dir[MAX_PATH * 2];
@@ -974,11 +1416,8 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {{
         wchar_t exe_path[MAX_PATH * 2];
         DWORD len = GetModuleFileNameW(NULL, exe_path, MAX_PATH * 2);
         if (len > 0 && len < MAX_PATH * 2 && ends_with_ci(exe_path, L"\\\\grw.exe")) {{
-            g_mutex = CreateMutexW(NULL, FALSE, L"Local\\\\GRW_GhostTacticalPad_Mutex");
-            if (g_mutex && GetLastError() != ERROR_ALREADY_EXISTS) {{
-                HANDLE th = CreateThread(NULL, 0, launch_ghost_pad_thread, hinstDLL, 0, NULL);
-                if (th) CloseHandle(th);
-            }}
+            HANDLE th = CreateThread(NULL, 0, launch_ghost_pad_thread, hinstDLL, 0, NULL);
+            if (th) CloseHandle(th);
         }}
     }} else if (fdwReason == DLL_PROCESS_DETACH) {{
         remove_tu25_hooks();
@@ -1118,27 +1557,255 @@ def build_embedded_python() -> Path:
     return emb_dir
 
 
+def compile_standalone_exe() -> Path:
+    """Compila GhostTacticalPad.exe independente (zero Python do sistema necessário)."""
+    if not VCVARS64.is_file():
+        raise FileNotFoundError(f"vcvars64.bat não encontrado: {VCVARS64}")
+
+    exe_c = r'''#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <shellapi.h>
+#include <wchar.h>
+#include <stdio.h>
+#include <string.h>
+
+#ifndef LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+#define LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR 0x00000100
+#endif
+#ifndef LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+#define LOAD_LIBRARY_SEARCH_DEFAULT_DIRS 0x00001000
+#endif
+
+static int dir_or_file_exists(const wchar_t *p) {
+    return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES;
+}
+
+static int file_exists(const wchar_t *p) {
+    DWORD a = GetFileAttributesW(p);
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static void to_hex_utf8(const wchar_t *ws, char *hex_out, size_t hex_cap) {
+    char u8[MAX_PATH * 6];
+    int n = WideCharToMultiByte(CP_UTF8, 0, ws, -1, u8, (int)sizeof(u8), NULL, NULL);
+    if (n <= 1 || (size_t)((n - 1) * 2 + 1) > hex_cap) {
+        hex_out[0] = '\0';
+        return;
+    }
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 0; i < n - 1; ++i) {
+        unsigned char b = (unsigned char)u8[i];
+        hex_out[i * 2] = hx[(b >> 4) & 0xF];
+        hex_out[i * 2 + 1] = hx[b & 0xF];
+    }
+    hex_out[(n - 1) * 2] = '\0';
+}
+
+int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmdLine, int nCmdShow) {
+    (void)hInst; (void)hPrev; (void)cmdLine; (void)nCmdShow;
+    wchar_t self_path[MAX_PATH * 2];
+    wchar_t exe_dir[MAX_PATH * 2];
+    wchar_t pad_dir[MAX_PATH * 2];
+    wchar_t py_dir[MAX_PATH * 2];
+    wchar_t probe[MAX_PATH * 2];
+
+    DWORD n = GetModuleFileNameW(NULL, self_path, MAX_PATH * 2);
+    if (n == 0 || n >= MAX_PATH * 2) return 1;
+    lstrcpynW(exe_dir, self_path, MAX_PATH * 2);
+    int sep = -1;
+    for (int i = 0; exe_dir[i]; ++i) {
+        if (exe_dir[i] == L'\\' || exe_dir[i] == L'/') sep = i;
+    }
+    if (sep <= 0) return 1;
+    exe_dir[sep] = L'\0';
+
+    swprintf_s(probe, MAX_PATH * 2, L"%ls\\GhostPad\\launcher.py", exe_dir);
+    if (file_exists(probe)) {
+        swprintf_s(pad_dir, MAX_PATH * 2, L"%ls\\GhostPad", exe_dir);
+    } else {
+        lstrcpynW(pad_dir, exe_dir, MAX_PATH * 2);
+    }
+
+    swprintf_s(probe, MAX_PATH * 2, L"%ls\\python\\python312.dll", pad_dir);
+    if (file_exists(probe)) {
+        swprintf_s(py_dir, MAX_PATH * 2, L"%ls\\python", pad_dir);
+    } else {
+        swprintf_s(py_dir, MAX_PATH * 2, L"%ls\\python", exe_dir);
+    }
+
+    int argc = 0;
+    LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    int want_console = 0;
+    for (int i = 1; i < argc; ++i) {
+        if (wcscmp(argv[i], L"--dry-run") == 0 || wcscmp(argv[i], L"--help") == 0 || wcscmp(argv[i], L"-h") == 0) {
+            want_console = 1;
+        }
+    }
+    if (want_console && AttachConsole(ATTACH_PARENT_PROCESS)) {
+        FILE *fp = NULL;
+        freopen_s(&fp, "CONOUT$", "w", stdout);
+        freopen_s(&fp, "CONOUT$", "w", stderr);
+    }
+
+    swprintf_s(probe, MAX_PATH * 2, L"%ls\\python312.dll", py_dir);
+    if (!file_exists(probe)) {
+        if (argv) LocalFree(argv);
+        MessageBoxW(NULL, L"GhostPad\\python\\python312.dll nao encontrado.", L"Ghost Tactical Pad", MB_OK | MB_ICONERROR);
+        return 2;
+    }
+
+    static const wchar_t *const preloads[] = { L"vcruntime140.dll", L"vcruntime140_1.dll", L"libffi-8.dll", L"python3.dll" };
+    for (int i = 0; i < 4; ++i) {
+        wchar_t dep[MAX_PATH * 2];
+        swprintf_s(dep, MAX_PATH * 2, L"%ls\\%ls", py_dir, preloads[i]);
+        if (file_exists(dep)) {
+            LoadLibraryExW(dep, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        }
+    }
+    HMODULE hPy = LoadLibraryExW(probe, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (!hPy) {
+        if (argv) LocalFree(argv);
+        MessageBoxW(NULL, L"Falha ao carregar python312.dll embutida.", L"Ghost Tactical Pad", MB_OK | MB_ICONERROR);
+        return 3;
+    }
+
+    typedef void (__cdecl *PFN_Py_InitializeEx)(int);
+    typedef int  (__cdecl *PFN_PyRun_SimpleString)(const char *);
+    typedef void (__cdecl *PFN_Py_FinalizeEx)(void);
+
+    PFN_Py_InitializeEx pInitEx = (PFN_Py_InitializeEx)GetProcAddress(hPy, "Py_InitializeEx");
+    PFN_PyRun_SimpleString pRunSimple = (PFN_PyRun_SimpleString)GetProcAddress(hPy, "PyRun_SimpleString");
+    PFN_Py_FinalizeEx pFin = (PFN_Py_FinalizeEx)GetProcAddress(hPy, "Py_FinalizeEx");
+    if (!pInitEx || !pRunSimple) {
+        if (argv) LocalFree(argv);
+        return 4;
+    }
+    pInitEx(0);
+
+    char hex_pad[MAX_PATH * 12 + 1];
+    char hex_py[MAX_PATH * 12 + 1];
+    char hex_self[MAX_PATH * 12 + 1];
+    to_hex_utf8(pad_dir, hex_pad, sizeof(hex_pad));
+    to_hex_utf8(py_dir, hex_py, sizeof(hex_py));
+    to_hex_utf8(self_path, hex_self, sizeof(hex_self));
+
+    char args_list[16384];
+    size_t pos = 0;
+    pos += (size_t)_snprintf_s(args_list + pos, sizeof(args_list) - pos, _TRUNCATE, "[bytes.fromhex('%s').decode('utf-8')", hex_self);
+    for (int i = 1; i < argc && pos + 256 < sizeof(args_list); ++i) {
+        char ha[MAX_PATH * 4 + 1];
+        to_hex_utf8(argv[i], ha, sizeof(ha));
+        pos += (size_t)_snprintf_s(args_list + pos, sizeof(args_list) - pos, _TRUNCATE, ",bytes.fromhex('%s').decode('utf-8')", ha);
+    }
+    _snprintf_s(args_list + pos, sizeof(args_list) - pos, _TRUNCATE, "]");
+    if (argv) LocalFree(argv);
+
+    char py_code[24576];
+    _snprintf_s(
+        py_code,
+        sizeof(py_code),
+        _TRUNCATE,
+        "import sys, os\n"
+        "_pad = bytes.fromhex('%s').decode('utf-8')\n"
+        "_py = bytes.fromhex('%s').decode('utf-8')\n"
+        "if hasattr(os, 'add_dll_directory') and os.path.isdir(_py):\n"
+        "    os.add_dll_directory(_py)\n"
+        "if _pad not in sys.path:\n"
+        "    sys.path.insert(0, _pad)\n"
+        "sys.argv = %s\n"
+        "import launcher\n"
+        "launcher.main()\n",
+        hex_pad,
+        hex_py,
+        args_list
+    );
+    int rc = pRunSimple(py_code);
+    if (pFin) pFin();
+    return rc;
+}
+'''
+    (BUILD_DIR / "ghost_pad_exe.c").write_text(exe_c, encoding="utf-8")
+    bat_path = BUILD_DIR / "build_exe.bat"
+    bat_path.write_text(
+        "@echo off\n"
+        f'call "{VCVARS64}" >nul\n'
+        f'cd /d "{BUILD_DIR}"\n'
+        "cl /nologo /O2 /W3 /MT ghost_pad_exe.c "
+        "/link /SUBSYSTEM:WINDOWS /OUT:GhostTacticalPad.exe kernel32.lib user32.lib shell32.lib || exit /b 1\n",
+        encoding="ascii",
+    )
+    res = subprocess.run(["cmd.exe", "/c", str(bat_path)], capture_output=True, text=True)
+    if res.returncode != 0:
+        print(res.stdout)
+        print(res.stderr)
+        raise RuntimeError(f"Compilação de GhostTacticalPad.exe falhou com código {res.returncode}")
+    out_exe = BUILD_DIR / "GhostTacticalPad.exe"
+    if not out_exe.is_file():
+        raise FileNotFoundError("GhostTacticalPad.exe não foi gerado")
+    return out_exe
+
+
 def verify_clean_release(rel_dir: Path) -> None:
-    """Garante zero .exe, zero .zip/.7z/.whl internos, zero cache/data e imports mínimos."""
-    forbidden_ext = {".exe", ".zip", ".7z", ".rar", ".whl", ".save", ".log", ".forge", ".wmap"}
+    """Garante apenas GhostTacticalPad.exe permitido como .exe, zero zips internos, zero cache/data e imports mínimos."""
+    forbidden_ext = {".zip", ".7z", ".rar", ".whl", ".save", ".log", ".forge", ".wmap"}
     forbidden_dirs = {"cache", "data", "__pycache__"}
     for p in rel_dir.rglob("*"):
         if p.is_dir():
             assert p.name not in forbidden_dirs, f"Pasta proibida em mod_release: {p}"
         else:
-            assert p.suffix.lower() not in forbidden_ext, f"Arquivo proibido em mod_release: {p}"
+            suf = p.suffix.lower()
+            if suf == ".exe":
+                assert p.name == "GhostTacticalPad.exe" and p.parent == rel_dir, f"Executável inesperado em mod_release: {p}"
+            else:
+                assert suf not in forbidden_ext, f"Arquivo proibido em mod_release: {p}"
 
     dll_imports = [d.lower() for d in parse_pe_imports(rel_dir / "winmm.dll")]
     assert dll_imports == ["kernel32.dll"], f"Imports inesperados em winmm.dll: {dll_imports}"
+    exe_imports = {d.lower() for d in parse_pe_imports(rel_dir / "GhostTacticalPad.exe")}
+    assert exe_imports <= {"kernel32.dll", "user32.dll", "shell32.dll"}, f"Imports inesperados em GhostTacticalPad.exe: {exe_imports}"
 
 
-def package_release(dll_path: Path, embedded_py_dir: Path | None, make_zip: bool = True) -> None:
+def _enduser_installer_bat() -> str:
+    return (
+        "@echo off\n"
+        "setlocal\n"
+        "title Ghost Tactical Pad — Instalador Wildlands\n"
+        "set \"TARGET=\"\n"
+        "for %%D in (\n"
+        "  \"C:\\Program Files (x86)\\Steam\\steamapps\\common\\Wildlands\"\n"
+        "  \"C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\games\\Tom Clancy's Ghost Recon Wildlands\"\n"
+        "  \"C:\\Program Files\\Ubisoft\\Ubisoft Game Launcher\\games\\Tom Clancy's Ghost Recon Wildlands\"\n"
+        "  \"D:\\SteamLibrary\\steamapps\\common\\Wildlands\"\n"
+        "  \"D:\\Games\\Wildlands\"\n"
+        ") do (\n"
+        "  if exist \"%%~D\\GRW.exe\" if not defined TARGET set \"TARGET=%%~D\"\n"
+        ")\n"
+        "if not defined TARGET (\n"
+        "  set /p \"TARGET=Informe o caminho da pasta de Ghost Recon Wildlands (onde fica GRW.exe): \"\n"
+        ")\n"
+        "if not exist \"%TARGET%\\GRW.exe\" (\n"
+        "  echo ERRO: GRW.exe nao encontrado em \"%TARGET%\".\n"
+        "  pause\n"
+        "  exit /b 1\n"
+        ")\n"
+        "echo Instalando Ghost Tactical Pad em \"%TARGET%\"...\n"
+        "copy /Y \"%~dp0winmm.dll\" \"%TARGET%\\winmm.dll\" >nul\n"
+        "copy /Y \"%~dp0GhostTacticalPad.exe\" \"%TARGET%\\GhostTacticalPad.exe\" >nul\n"
+        "xcopy /E /I /Y \"%~dp0GhostPad\" \"%TARGET%\\GhostPad\" >nul\n"
+        "echo.\n"
+        "echo Pronto! Abra o Ghost Recon Wildlands normalmente (ou execute GhostTacticalPad.exe para modo offline).\n"
+        "pause\n"
+    )
+
+
+def package_release(dll_path: Path, exe_path: Path, embedded_py_dir: Path | None, make_zip: bool = True) -> None:
     if RELEASE_DIR.exists():
         shutil.rmtree(RELEASE_DIR)
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
     gp_dir = RELEASE_DIR / "GhostPad"
     gp_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(dll_path, RELEASE_DIR / "winmm.dll")
+    shutil.copy2(exe_path, RELEASE_DIR / "GhostTacticalPad.exe")
 
     for py_name in PY_SOURCE_FILES:
         src = ROOT_DIR / py_name
@@ -1151,6 +1818,7 @@ def package_release(dll_path: Path, embedded_py_dir: Path | None, make_zip: bool
         shutil.copytree(ROOT_DIR / "web", gp_dir / "web")
     if (ROOT_DIR / "Iniciar Ghost Pad.bat").is_file():
         shutil.copy2(ROOT_DIR / "Iniciar Ghost Pad.bat", gp_dir / "Iniciar Ghost Pad.bat")
+    (RELEASE_DIR / "Instalar Mod.bat").write_text(_enduser_installer_bat(), encoding="utf-8")
     if (ROOT_DIR / "README.md").is_file():
         shutil.copy2(ROOT_DIR / "README.md", RELEASE_DIR / "README.md")
     if (ROOT_DIR / "LICENSE").is_file():
@@ -1168,8 +1836,8 @@ def package_release(dll_path: Path, embedded_py_dir: Path | None, make_zip: bool
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Compila winmm.dll e gera o pacote standalone embutido do Ghost Tactical Pad.")
-    ap.add_argument("--proxy-only", action="store_true", help="Compila apenas winmm.dll sem montar o runtime Python embutido")
+    ap = argparse.ArgumentParser(description="Compila winmm.dll e GhostTacticalPad.exe e gera o pacote standalone.")
+    ap.add_argument("--proxy-only", action="store_true", help="Compila apenas winmm.dll/exe sem montar o runtime Python embutido")
     ap.add_argument("--no-zip", action="store_true", help="Não gera o .zip final de distribuição")
     args = ap.parse_args()
 
@@ -1177,13 +1845,16 @@ def main() -> None:
     print(f"Exports detectados em {SYSTEM_WINMM}: {len(exports)}")
     generate_sources(exports)
     dll_path = compile_proxy()
+    exe_path = compile_standalone_exe()
     out_exports = parse_pe_exports(dll_path)
     imports = parse_pe_imports(dll_path)
+    exe_imports = parse_pe_imports(exe_path)
     print(f"winmm.dll compilada ({dll_path.stat().st_size} bytes), exports={len(out_exports)}, imports={imports}")
+    print(f"GhostTacticalPad.exe compilado ({exe_path.stat().st_size} bytes), imports={exe_imports}")
     assert len(out_exports) == len(exports)
 
     embedded_py_dir = None if args.proxy_only else build_embedded_python()
-    package_release(dll_path, embedded_py_dir, make_zip=not args.no_zip)
+    package_release(dll_path, exe_path, embedded_py_dir, make_zip=not args.no_zip)
     print(f"Pacote pronto em {RELEASE_DIR}")
 
 

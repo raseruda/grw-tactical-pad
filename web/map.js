@@ -80,6 +80,13 @@ window.GhostMap = (() => {
       if (this.opts.onViewChange) this.opts.onViewChange(this.camU, this.camV, this.zoom);
     }
 
+    setViewExact(u, v, zoom) {
+      if (typeof u === "number") this.camU = Math.max(0, Math.min(1, u));
+      if (typeof v === "number") this.camV = Math.max(0, Math.min(1, v));
+      if (typeof zoom === "number" && zoom > 0) this.zoom = zoom;
+      this._needsRedraw = true;
+    }
+
     recenterOnPlayer() {
       const l = this.liveState;
       if (l && l.player) {
@@ -247,7 +254,7 @@ window.GhostMap = (() => {
         const img = new Image();
         rec = { img, loaded: false };
         img.onload = () => { rec.loaded = true; this._needsRedraw = true; };
-        img.src = `/api/icon/${name}.png`;
+        img.src = `/api/icon/${name}.png?v=2`;
         this.iconCache.set(name, rec);
       }
       return rec;
@@ -403,6 +410,13 @@ window.GhostMap = (() => {
         }
         const ic = this._getIcon(poi.cat);
         if (ic.loaded) {
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 12.5, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(8, 13, 20, 0.8)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(148, 163, 184, 0.35)";
+          ctx.lineWidth = 1;
+          ctx.stroke();
           ctx.drawImage(ic.img, pt.x - 11, pt.y - 11, 22, 22);
         } else {
           ctx.beginPath();
@@ -492,8 +506,12 @@ window.GhostMap = (() => {
         ctx.restore();
       }
 
-      // Raio sonoro da arma equipada ao redor do Jogador
-      if (player && this.prefs.showWeaponNoiseRing !== false && tac.safe_fire && tac.safe_fire.hear_radius_m > 0) {
+      // Raio sonoro da arma equipada ao redor do Jogador ("always" ou "aiming")
+      const noiseMode = this.prefs.weaponNoiseRingMode || "always";
+      const showNoiseNow =
+        this.prefs.showWeaponNoiseRing !== false &&
+        (noiseMode !== "aiming" || !!(player && player.is_aiming));
+      if (player && showNoiseNow && tac.safe_fire && tac.safe_fire.hear_radius_m > 0) {
         const ps = this.uvToScreen(player.u, player.v);
         const rPx = this.metersToPixels(tac.safe_fire.hear_radius_m);
         const isSafe = tac.safe_fire.safe;
@@ -509,55 +527,134 @@ window.GhostMap = (() => {
         ctx.restore();
       }
 
-      // Inimigos, direção do olhar, cones FOV e círculos de audição
-      const enemies = live.enemies || [];
+      // Cores por facção e contornos dinâmicos de alerta (Laranja = desconfiado, Vermelho = hostil)
+      const FACTION_COLORS = {
+        ghost: "#3b82f6",
+        santa_blanca: "#d4a017",
+        unidad: "#9333ea",
+        rebel: "#22c55e",
+        civilian: "#f8fafc",
+      };
+      const isFactionVisible = (fac) => {
+        if (fac === "santa_blanca") return this.prefs.showFactionSantaBlanca !== false;
+        if (fac === "unidad") return this.prefs.showFactionUnidad !== false;
+        if (fac === "rebel") return this.prefs.showFactionRebel !== false;
+        if (fac === "civilian") return this.prefs.showFactionCivilian !== false;
+        return true;
+      };
+      const drawAlertRing = (x, y, alert, radius) => {
+        const st = String(alert || "unaware").toLowerCase();
+        let ringColor = null;
+        if (st === "suspected") ringColor = "#f97316";
+        else if (st === "hostile" || st === "engaged" || st === "hunted") ringColor = "#ef4444";
+        if (!ringColor) return;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = st === "suspected" ? "rgba(249, 115, 22, 0.14)" : "rgba(239, 68, 68, 0.18)";
+        ctx.fill();
+        ctx.strokeStyle = ringColor;
+        ctx.lineWidth = 2.4;
+        ctx.stroke();
+        ctx.restore();
+      };
+
+      const visionFactions = new Set(
+        Array.isArray(this.prefs.visionFactions) ? this.prefs.visionFactions : ["santa_blanca", "unidad"]
+      );
+      const soundFactions = new Set(
+        Array.isArray(this.prefs.soundFactions) ? this.prefs.soundFactions : ["santa_blanca", "unidad"]
+      );
+
+      // Reúne todos os NPCs não-Ghost sem duplicar por ID
+      const allNpcs = [];
+      const seenNpcIds = new Set();
+      const pushNpcList = (arr) => {
+        if (!Array.isArray(arr)) return;
+        for (const n of arr) {
+          if (!n || n.alive === false) continue;
+          const fac = n.faction || "santa_blanca";
+          if (fac === "ghost") continue;
+          const key = n.id || `${fac}:${Number(n.u).toFixed(5)},${Number(n.v).toFixed(5)}`;
+          if (seenNpcIds.has(key)) continue;
+          seenNpcIds.add(key);
+          allNpcs.push(n);
+        }
+      };
+      pushNpcList(live.enemies);
+      pushNpcList(live.rebels);
+      pushNpcList(live.civilians);
+      pushNpcList(live.npcs);
+
       const visRangeM = Number(this.prefs.enemyVisionRangeM || 55);
       const fovRad = (Number(this.prefs.enemyFovDeg || 110) * Math.PI) / 180;
       const visPx = this.metersToPixels(visRangeM);
 
       if (this.prefs.showEnemies !== false) {
-        for (const en of enemies) {
-          if (en.alive === false) continue;
-          const es = this.uvToScreen(en.u, en.v);
+        for (const npc of allNpcs) {
+          const fac = npc.faction || "santa_blanca";
+          if (!isFactionVisible(fac)) continue;
+
+          const es = this.uvToScreen(npc.u, npc.v);
           if (es.x < -120 || es.x > w + 120 || es.y < -120 || es.y > h + 120) continue;
 
-          const yawDeg = Number(en.yaw || 0);
-          const lookAngleCanvas = ((yawDeg - 90) * Math.PI) / 180; // 0 deg = Norte = -PI/2 no canvas
+          const yawDeg = Number(npc.yaw || 0);
+          const lookAngleCanvas = ((yawDeg - 90) * Math.PI) / 180;
+          const alert = String(npc.alert || "unaware").toLowerCase();
+          const isHostile = alert === "hostile" || alert === "engaged" || alert === "hunted";
+          const isSusp = alert === "suspected";
 
-          // Cone de Visão (FOV)
-          if (this.prefs.showEnemyVisionCones !== false && visPx > 4) {
+          // Cone de Visão (FOV) configurável por facção
+          if (this.prefs.showEnemyVisionCones !== false && visionFactions.has(fac) && visPx > 4) {
             ctx.save();
             ctx.beginPath();
             ctx.moveTo(es.x, es.y);
             ctx.arc(es.x, es.y, visPx, lookAngleCanvas - fovRad * 0.5, lookAngleCanvas + fovRad * 0.5);
             ctx.closePath();
-            const isEngaged = en.alert === "engaged" || en.alert === "hunted";
-            const isSusp = en.alert === "suspected";
-            ctx.fillStyle = isEngaged
-              ? "rgba(239, 68, 68, 0.18)"
-              : isSusp
-              ? "rgba(245, 158, 11, 0.16)"
-              : "rgba(239, 68, 68, 0.09)";
+            if (isHostile) {
+              ctx.fillStyle = "rgba(239, 68, 68, 0.18)";
+              ctx.strokeStyle = "rgba(239, 68, 68, 0.48)";
+            } else if (isSusp) {
+              ctx.fillStyle = "rgba(249, 115, 22, 0.16)";
+              ctx.strokeStyle = "rgba(249, 115, 22, 0.48)";
+            } else if (fac === "unidad") {
+              ctx.fillStyle = "rgba(147, 51, 234, 0.12)";
+              ctx.strokeStyle = "rgba(147, 51, 234, 0.36)";
+            } else if (fac === "rebel") {
+              ctx.fillStyle = "rgba(34, 197, 94, 0.10)";
+              ctx.strokeStyle = "rgba(34, 197, 94, 0.34)";
+            } else if (fac === "civilian") {
+              ctx.fillStyle = "rgba(248, 250, 252, 0.08)";
+              ctx.strokeStyle = "rgba(248, 250, 252, 0.28)";
+            } else {
+              ctx.fillStyle = "rgba(212, 160, 23, 0.13)";
+              ctx.strokeStyle = "rgba(212, 160, 23, 0.38)";
+            }
             ctx.fill();
-            ctx.strokeStyle = isSusp ? "rgba(245, 158, 11, 0.45)" : "rgba(239, 68, 68, 0.35)";
             ctx.lineWidth = 1;
             ctx.stroke();
             ctx.restore();
           }
 
-          // Círculo opcional de audição do inimigo (alerta próximo)
-          if (this.prefs.showEnemyHearingRings) {
+          // Círculo opcional de audição do NPC (configurável por facção)
+          if (this.prefs.showEnemyHearingRings && soundFactions.has(fac)) {
             const hPx = this.metersToPixels(Number(this.prefs.bulletImpactNoiseM || 12));
             ctx.save();
             ctx.beginPath();
             ctx.arc(es.x, es.y, hPx, 0, Math.PI * 2);
-            ctx.strokeStyle = "rgba(245, 158, 11, 0.32)";
+            ctx.strokeStyle = isHostile
+              ? "rgba(239, 68, 68, 0.42)"
+              : isSusp
+              ? "rgba(249, 115, 22, 0.42)"
+              : "rgba(245, 158, 11, 0.32)";
             ctx.setLineDash([3, 4]);
             ctx.stroke();
             ctx.restore();
           }
 
-          const baseColor = en.faction === "unidad" ? "#a855f7" : en.alert === "suspected" ? "#f59e0b" : "#ef4444";
+          drawAlertRing(es.x, es.y, alert, 10.5);
+
+          const baseColor = FACTION_COLORS[fac] || FACTION_COLORS.santa_blanca;
           if (this.prefs.showEnemyDirection !== false) {
             this._drawArrow(ctx, es.x, es.y, yawDeg, 7.5, baseColor, "#04070b");
           } else {
@@ -565,15 +662,44 @@ window.GhostMap = (() => {
             ctx.arc(es.x, es.y, 5.5, 0, Math.PI * 2);
             ctx.fillStyle = baseColor;
             ctx.fill();
+            ctx.strokeStyle = "#04070b";
+            ctx.lineWidth = 1.4;
+            ctx.stroke();
           }
         }
       }
 
-      // Aliados (Solo IA + Co-op) e linhas de mira
+      // Aliados (Solo IA + Co-op) em Azul (#3b82f6) + FOV/Som/Contorno opcionais
       const allies = tac.visible_allies || [];
       for (const al of allies) {
         const as = this.uvToScreen(al.u, al.v);
-        const col = al.type === "coop" ? "#a855f7" : "#22c55e";
+        const col = FACTION_COLORS.ghost;
+        const alYaw = Number(al.yaw || 0);
+        const lookAng = ((alYaw - 90) * Math.PI) / 180;
+
+        if (this.prefs.showEnemyVisionCones !== false && visionFactions.has("ghost") && visPx > 4) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(as.x, as.y);
+          ctx.arc(as.x, as.y, visPx, lookAng - fovRad * 0.5, lookAng + fovRad * 0.5);
+          ctx.closePath();
+          ctx.fillStyle = "rgba(59, 130, 246, 0.11)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(59, 130, 246, 0.35)";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.restore();
+        }
+        if (this.prefs.showEnemyHearingRings && soundFactions.has("ghost")) {
+          const hPx = this.metersToPixels(Number(this.prefs.bulletImpactNoiseM || 12));
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(as.x, as.y, hPx, 0, Math.PI * 2);
+          ctx.strokeStyle = "rgba(59, 130, 246, 0.35)";
+          ctx.setLineDash([3, 4]);
+          ctx.stroke();
+          ctx.restore();
+        }
         if (this.prefs.showAllySightlines !== false && al.is_aiming && al.aim_dir) {
           const aimLenPx = Math.max(40, this.metersToPixels(90));
           const ang = Math.atan2(al.aim_dir[0], al.aim_dir[1]);
@@ -581,17 +707,18 @@ window.GhostMap = (() => {
           ctx.beginPath();
           ctx.moveTo(as.x, as.y);
           ctx.lineTo(as.x + Math.sin(ang) * aimLenPx, as.y - Math.cos(ang) * aimLenPx);
-          ctx.strokeStyle = al.type === "coop" ? "rgba(192, 132, 252, 0.7)" : "rgba(74, 222, 128, 0.65)";
+          ctx.strokeStyle = "rgba(59, 130, 246, 0.72)";
           ctx.setLineDash([4, 4]);
           ctx.lineWidth = 1.6;
           ctx.stroke();
           ctx.restore();
         }
-        this._drawArrow(ctx, as.x, as.y, Number(al.yaw || 0), 8, col, "#ffffff");
+        drawAlertRing(as.x, as.y, al.alert, 11);
+        this._drawArrow(ctx, as.x, as.y, alYaw, 8, col, "#ffffff");
         ctx.save();
         ctx.font = "700 10.5px Segoe UI, sans-serif";
-        ctx.fillStyle = col;
-        ctx.fillText(al.name || (al.type === "coop" ? "CO-OP" : "AI"), as.x + 11, as.y + 3);
+        ctx.fillStyle = "#93c5fd";
+        ctx.fillText(al.name || (al.type === "coop" ? "CO-OP" : "IA"), as.x + 11, as.y + 3);
         ctx.restore();
       }
 
@@ -676,10 +803,11 @@ window.GhostMap = (() => {
         ctx.restore();
       }
 
-      // Jogador (Ghost Local)
+      // Jogador (Ghost Local em Azul + contorno dinâmico de alerta se suspeito/hostil)
       if (player) {
         const ps = this.uvToScreen(player.u, player.v);
-        this._drawArrow(ctx, ps.x, ps.y, Number(player.yaw || 0), 10, "#38bdf8", "#ffffff");
+        drawAlertRing(ps.x, ps.y, player.alert, 13.5);
+        this._drawArrow(ctx, ps.x, ps.y, Number(player.yaw || 0), 10, "#3b82f6", "#ffffff");
       }
     }
   }

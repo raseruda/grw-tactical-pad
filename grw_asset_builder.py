@@ -1,8 +1,7 @@
-"""Extrator local de máscaras, ícones e bancos de dados para cache/ do Ghost Tactical Pad."""
+"""Extrator local de máscaras, ícones oficiais BC7, IDs Anvil e bancos de dados para cache/ do Ghost Tactical Pad."""
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from pathlib import Path
@@ -12,29 +11,49 @@ from PIL import Image, ImageDraw
 
 from anvil_formats import ForgeArchive, decode_anvil_texture_map
 from config import (
-    CACHE_DIR,
     CACHE_VERSION,
     CARTEL_PATH,
     CATALOG_PATH,
+    FORGE_IDS_PATH,
     ICONS_CACHE_DIR,
     MAP_DATA_PATH,
     MASKS_CACHE_DIR,
     META_PATH,
     ensure_dirs,
 )
-from grw_catalog_db import MAP_CATEGORIES, build_static_databases
+from grw_catalog_db import (
+    ATTACHMENTS_DB,
+    MAP_CATEGORIES,
+    PROVINCES,
+    WEAPONS_DB,
+    build_static_databases,
+)
 
 _BUILD_LOCK = threading.Lock()
 
-# Ícones oficiais no DataPC.forge mapeados para categorias locais
+# TODOS os 12 ícones oficiais de categorias do mapa no DataPC.forge (BC7 32x32)
 FORGE_ICON_MAP: dict[str, str] = {
     "weapon_case": "UI_HUD_Hint_Marker_WeaponLoot_Map",
     "attachment_case": "UI_HUD_Hint_Marker_WeaponAttachmentLoot_Map",
     "bonus_medal": "UI_HUD_Hint_Icon_Medal_Map",
+    "sb_base": "UI_HUD_Hint_SB_Icon_Map",
+    "unidad_base": "UI_HUD_Hint_UnidadGauge_Icon_Map",
     "sam_site": "UI_HUD_Hint_SAMLauncher_Icon_Map",
     "jammer": "UI_HUD_Hint_DroneJamer_Icon_Map",
+    "rebel_op": "UI_HUD_Hint_RebelOps_Icon_Map",
+    "rally_point": "UI_HUD_Hint_RallyPoint_Map",
     "skill_point": "UI_HUD_Hint_Icon_SkillPoint_Map",
-    "rebel_op": "UI_HUD_Hint_Activity_Recon_Icon_Map",
+    "kingslayer": "UI_HUD_Hint_Intel_Story_Icon_Map",
+    "boss_hq": "UI_HUD_Hint_Icon_HVT_Map",
+}
+
+# Ícones oficiais de classe de armas no DataPC.forge
+FORGE_CLASS_ICON_MAP: dict[str, str] = {
+    "class_ar": "UI_COM_Icon_Assault_Rifles_Map",
+    "class_sniper": "UI_COM_Icon_Sniper_Rifles_Map",
+    "class_smg": "UI_COM_Icon_SmallMachineGuns_Map",
+    "class_lmg": "UI_COM_Icon_LightMachineGuns_Map",
+    "class_pistol": "UI_COM_Icon_HandGuns_Map",
 }
 
 
@@ -46,7 +65,7 @@ def _hex_to_rgba(hex_str: str, alpha: int = 255) -> tuple[int, int, int, int]:
 
 
 def _render_fallback_icon(cat_id: str, color_hex: str, out_path: Path) -> None:
-    """Desenha um ícone tático nítido 36x36 em PNG caso o asset do .forge não esteja disponível."""
+    """Desenha um ícone tático nítido 36x36 em PNG caso DataPC.forge não esteja acessível."""
     sz = 36
     im = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
     draw = ImageDraw.Draw(im)
@@ -98,10 +117,8 @@ def _build_province_masks(sectors_bytes: bytes) -> None:
             v = data[idx]
             p4 = idx * 4
             if v == 255:
-                # Fora da área jogável da Bolívia: névoa escura tática
                 border_buf[p4 : p4 + 4] = b"\x06\x0b\x12\xaa"
                 continue
-            # Checa vizinhos para desenhar fronteira
             is_outer = False
             is_sector = False
             if x > 0:
@@ -139,6 +156,75 @@ def _build_province_masks(sectors_bytes: bytes) -> None:
     Image.frombytes("RGBA", (w, h), bytes(prov_buf)).save(MASKS_CACHE_DIR / "provinces_overlay.png", "PNG")
 
 
+def _build_forge_ids_index(forge: ForgeArchive) -> dict[str, Any]:
+    """Indexa fid (64-bit) e tokens reais do DataPC.forge para armas, acessórios e províncias concluídas."""
+    weapons_fids: dict[str, list[dict[str, Any]]] = {}
+    atts_fids: dict[str, list[dict[str, Any]]] = {}
+    provinces_fids: dict[str, list[dict[str, Any]]] = {}
+    collectibles_fids: dict[str, list[int]] = {}
+
+    entry_by_exact: dict[str, list[dict[str, Any]]] = {}
+    for e in forge.entries:
+        entry_by_exact.setdefault(e["name"], []).append(e)
+
+    def _collect_for_patterns(patterns: list[str]) -> list[dict[str, Any]]:
+        matched: list[dict[str, Any]] = []
+        seen_fids: set[int] = set()
+        for pat in patterns:
+            # Prefere correspondência exata e variantes base sem texturas _Map/_Mip
+            for e in entry_by_exact.get(pat, ()):
+                fid = int(e["fid"])
+                if fid not in seen_fids:
+                    seen_fids.add(fid)
+                    matched.append({"name": e["name"], "fid": fid, "res_id": int(e["res_id"])})
+            if not matched:
+                for e in forge.entries:
+                    nm = e["name"]
+                    if nm.startswith(pat) and "Map" not in nm and "_LOD" not in nm:
+                        fid = int(e["fid"])
+                        if fid not in seen_fids:
+                            seen_fids.add(fid)
+                            matched.append({"name": nm, "fid": fid, "res_id": int(e["res_id"])})
+                        if len(matched) >= 6:
+                            break
+        return matched
+
+    for w in WEAPONS_DB:
+        pats = w.get("forge_patterns") or []
+        if pats:
+            hits = _collect_for_patterns(pats)
+            if hits:
+                weapons_fids[w["id"]] = hits
+
+    for a in ATTACHMENTS_DB:
+        pats = a.get("forge_patterns") or []
+        if pats:
+            hits = _collect_for_patterns(pats)
+            if hits:
+                atts_fids[a["id"]] = hits
+
+    for p in PROVINCES:
+        fn = p.get("forge_completed_name")
+        if fn:
+            hits = _collect_for_patterns([fn])
+            if hits:
+                provinces_fids[p["id"]] = hits
+
+    for e in forge.entries:
+        nm = e["name"]
+        if nm.startswith("Collectible_"):
+            parts = nm.split("_")
+            if len(parts) >= 2:
+                collectibles_fids.setdefault(parts[1], []).append(int(e["fid"]))
+
+    return {
+        "weapons": weapons_fids,
+        "attachments": atts_fids,
+        "provinces": provinces_fids,
+        "collectible_fids": collectibles_fids,
+    }
+
+
 def is_cache_valid(lang: str, game_dir: Path) -> bool:
     if not (META_PATH.is_file() and MAP_DATA_PATH.is_file() and CATALOG_PATH.is_file() and CARTEL_PATH.is_file()):
         return False
@@ -159,7 +245,7 @@ def ensure_cache_built(
     force: bool = False,
     progress_cb: Callable[[int, str], None] | None = None,
 ) -> dict[str, Any]:
-    """Constrói o cache local de dados e máscaras a partir da cópia do jogador."""
+    """Constrói o cache local de dados, ícones oficiais BC7, IDs .forge e máscaras a partir da cópia do jogador."""
     with _BUILD_LOCK:
         ensure_dirs()
         if not force and is_cache_valid(lang, game_dir):
@@ -191,7 +277,7 @@ def ensure_cache_built(
                     pass
 
         if progress_cb:
-            progress_cb(60, "Preparing tactical & weapon icons...")
+            progress_cb(55, "Decoding official tactical & weapon icons...")
 
         for cat in MAP_CATEGORIES:
             cid = cat["id"]
@@ -211,8 +297,28 @@ def ensure_cache_built(
             if not extracted:
                 _render_fallback_icon(cid, cat["color"], out_icon)
 
+        if forge is not None:
+            for key, tex_name in FORGE_CLASS_ICON_MAP.items():
+                out_cls = ICONS_CACHE_DIR / f"{key}.png"
+                entries = forge.find_by_name(tex_name)
+                if entries:
+                    try:
+                        im = decode_anvil_texture_map(forge.read_payload_sets(entries[0]))
+                        if im is not None:
+                            im.save(out_cls, "PNG")
+                    except Exception:
+                        pass
+
+            if progress_cb:
+                progress_cb(72, "Indexing Anvil unlock & province IDs...")
+            try:
+                forge_ids = _build_forge_ids_index(forge)
+                FORGE_IDS_PATH.write_text(json.dumps(forge_ids, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
+
         if progress_cb:
-            progress_cb(85, "Building tactical catalog & cartel DB...")
+            progress_cb(85, "Building tactical catalog, compatibility & cartel DB...")
 
         map_data, catalog_data, cartel_data = build_static_databases(lang)
         MAP_DATA_PATH.write_text(json.dumps(map_data, ensure_ascii=False), encoding="utf-8")

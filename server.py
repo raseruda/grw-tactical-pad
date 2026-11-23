@@ -41,6 +41,7 @@ from config import (
     save_settings,
 )
 from grw_memory import GRWLiveReader
+from grw_save_sync import AutoProgressSync
 from tactical_engine import analyze_tactical_state
 
 TILE_URL_RE = re.compile(r"^/api/tile/(satellite|heatmap)/([0-6])/(\d{1,3})/(\d{1,3})\.png$")
@@ -48,12 +49,15 @@ ICON_URL_RE = re.compile(r"^/api/icon/([A-Za-z0-9_\-]+)\.png$")
 MASK_URL_RE = re.compile(r"^/api/mask/([A-Za-z0-9_\-]+)\.png$")
 MARKER_ID_RE = re.compile(r"^/api/markers/([A-Za-z0-9_\-]+)$")
 
+_ALLOWED_FACTIONS = frozenset({"santa_blanca", "unidad", "rebel", "civilian", "ghost"})
+
 _UI_PREF_ENUMS: dict[str, tuple[str, ...]] = {
     "activeTab": ("map", "wiki", "cartel"),
     "mapMode": ("spoiler_free", "assist", "full"),
     "mapStyle": ("satellite", "heatmap"),
     "weaponOverrideClass": ("auto", "pistol", "smg", "ar", "lmg", "shotgun", "sniper"),
     "weaponOverrideSuppressed": ("auto", "suppressed", "unsuppressed"),
+    "weaponNoiseRingMode": ("always", "aiming"),
 }
 _UI_PREF_BOOLS = (
     "fogOfWar",
@@ -70,6 +74,10 @@ _UI_PREF_BOOLS = (
     "showEnemyVisionCones",
     "showEnemyHearingRings",
     "showWeaponNoiseRing",
+    "showFactionSantaBlanca",
+    "showFactionUnidad",
+    "showFactionRebel",
+    "showFactionCivilian",
     "showSafeToFireHud",
     "showPlayerAimWarning",
     "showAlliesSolo",
@@ -84,7 +92,7 @@ _UI_PREF_BOOLS = (
     "wikiMissingOnly",
 )
 _UI_PREF_FLOATS: dict[str, tuple[float, float]] = {
-    "zoom": (0.04, 16.0),
+    "zoom": (0.015, 16.0),
     "camU": (0.0, 1.0),
     "camV": (0.0, 1.0),
     "assistRadius": (50.0, 2000.0),
@@ -118,6 +126,9 @@ def _sanitize_ui_prefs(raw: Any) -> dict[str, Any]:
         v = raw.get(k)
         if isinstance(v, str) and v.strip():
             out[k] = v.strip()[:32]
+    if "selectedProvince" in raw:
+        sp = raw.get("selectedProvince")
+        out["selectedProvince"] = sp.strip()[:48] if isinstance(sp, str) and sp.strip() else None
     cats = raw.get("enabledCats")
     if cats is None and "enabledCats" in raw:
         out["enabledCats"] = None
@@ -133,6 +144,18 @@ def _sanitize_ui_prefs(raw: Any) -> dict[str, Any]:
                     if len(clean) >= 64:
                         break
         out["enabledCats"] = clean
+    for fkey in ("visionFactions", "soundFactions"):
+        fval = raw.get(fkey)
+        if isinstance(fval, list):
+            clean_f: list[str] = []
+            seen_f: set[str] = set()
+            for item in fval:
+                if isinstance(item, str):
+                    s = item.strip()
+                    if s in _ALLOWED_FACTIONS and s not in seen_f:
+                        seen_f.add(s)
+                        clean_f.append(s)
+            out[fkey] = clean_f
     return out
 
 
@@ -159,6 +182,7 @@ class GhostPadRuntime:
         lan: bool = False,
         port: int = DEFAULT_PORT,
         telemetry_ptr: int | None = None,
+        allow_takeover: bool = False,
     ) -> None:
         ensure_dirs()
         self.game_dir = game_dir
@@ -167,6 +191,7 @@ class GhostPadRuntime:
         self.lang_source = lang_source
         self.lan = lan
         self.port = port
+        self.allow_takeover = allow_takeover
         self.stop_event = threading.Event()
 
         self._build_lock = threading.Lock()
@@ -184,17 +209,24 @@ class GhostPadRuntime:
         self._wmap_heat = WmapReader(game_dir / "gr_h.wmap")
         self._heightmap = HeightmapSampler()
         self._live_reader = GRWLiveReader(telemetry_ptr=telemetry_ptr, world_bounds=settings.get("world_bounds"))
+        self._save_sync = AutoProgressSync()
 
         self._state_lock = threading.Lock()
         self._sse_cond = threading.Condition(self._state_lock)
         self._live_seq = 0
+        self._progress_version = 1
         self._latest_live: dict[str, Any] = {
             "mode": "offline",
             "status": "offline",
+            "lang": self.lang,
+            "progress_version": self._progress_version,
             "player": None,
             "drone": None,
             "allies": [],
             "enemies": [],
+            "rebels": [],
+            "civilians": [],
+            "npcs": [],
             "trail": [],
             "tactical": analyze_tactical_state({}, self._heightmap, self._ui_prefs),
         }
@@ -313,10 +345,19 @@ class GhostPadRuntime:
                 else:
                     provs.add(pr)
                 cur["discovered_provinces"] = sorted(provs)
-            for key in ("collected_items", "completed_pois", "discovered_provinces", "defeated_bosses"):
+            if "toggle_mission" in body:
+                mid = str(body["toggle_mission"])
+                miss = set(cur.get("completed_missions") or [])
+                if mid in miss:
+                    miss.remove(mid)
+                else:
+                    miss.add(mid)
+                cur["completed_missions"] = sorted(miss)
+            for key in ("collected_items", "completed_pois", "discovered_provinces", "defeated_bosses", "completed_missions"):
                 if isinstance(body.get(key), list):
                     cur[key] = body[key]
             self._progress = save_progress(cur)
+            self._progress_version += 1
             return dict(self._progress)
 
     def _load_static_caches(self) -> None:
@@ -350,6 +391,7 @@ class GhostPadRuntime:
                 self._static_bytes.clear()
                 self._static_gz.clear()
             self._load_static_caches()
+            self._save_sync.reload_index()
             cb(100, "Ready")
         except Exception as exc:
             with self._build_lock:
@@ -358,6 +400,7 @@ class GhostPadRuntime:
     def start_background_tasks(self, force_rebuild: bool = False) -> None:
         if not force_rebuild and grw_asset_builder.is_cache_valid(self.lang, self.game_dir):
             self._load_static_caches()
+            self._save_sync.reload_index()
             with self._build_lock:
                 self._build_status = {"state": "ready", "progress": 100, "message": "Ready"}
         else:
@@ -369,43 +412,48 @@ class GhostPadRuntime:
 
     def get_settings(self) -> dict[str, Any]:
         cfg = load_settings()
+        prefs = dict(DEFAULT_UI_PREFS)
+        prefs.update(_sanitize_ui_prefs(cfg.get("ui_prefs") or {}))
         return {
             "lang": self.lang,
             "lang_setting": self.lang_setting,
             "lang_source": self.lang_source,
             "world_bounds": cfg.get("world_bounds"),
-            "ui_prefs": _sanitize_ui_prefs(cfg.get("ui_prefs") or {}),
+            "ui_prefs": prefs,
         }
 
     def update_settings(self, body: dict[str, Any]) -> dict[str, Any]:
-        updates: dict[str, Any] = {}
+        cur = load_settings()
+        changed = False
         lang_requested = "lang" in body
         if lang_requested:
             raw_lang = str(body.get("lang") or "auto").strip()
             norm = normalize_locale(raw_lang)
-            updates["lang"] = "auto" if (not raw_lang or raw_lang.lower() == "auto" or norm is None) else norm
+            cur["lang"] = "auto" if (not raw_lang or raw_lang.lower() == "auto" or norm is None) else norm
+            changed = True
 
         if isinstance(body.get("ui_prefs"), dict):
-            cur = load_settings()
-            merged = _sanitize_ui_prefs(cur.get("ui_prefs") or {})
+            merged = dict(DEFAULT_UI_PREFS)
+            merged.update(_sanitize_ui_prefs(cur.get("ui_prefs") or {}))
             merged.update(_sanitize_ui_prefs(body["ui_prefs"]))
-            updates["ui_prefs"] = merged
+            cur["ui_prefs"] = merged
             with self._state_lock:
                 self._ui_prefs.update(merged)
+            changed = True
 
         if isinstance(body.get("world_bounds"), dict):
             wb = body["world_bounds"]
-            cur = load_settings()
             cur_wb = dict(cur.get("world_bounds") or {})
             for k in ("min_x", "max_x", "min_y", "max_y"):
                 if isinstance(wb.get(k), (int, float)):
                     cur_wb[k] = float(wb[k])
             if "invert_y" in wb:
                 cur_wb["invert_y"] = bool(wb["invert_y"])
-            updates["world_bounds"] = cur_wb
+            cur["world_bounds"] = cur_wb
             self._live_reader.set_world_bounds(cur_wb)
+            changed = True
 
-        cfg = save_settings(updates) if updates else load_settings()
+        cfg = save_settings(cur) if changed else cur
         rebuilding = False
         if lang_requested:
             eff_lang, src = resolve_effective_language(cfg, self.game_dir)
@@ -416,13 +464,15 @@ class GhostPadRuntime:
                 self.trigger_rebuild()
                 rebuilding = True
 
+        out_prefs = dict(DEFAULT_UI_PREFS)
+        out_prefs.update(_sanitize_ui_prefs(cfg.get("ui_prefs") or {}))
         return {
             "ok": True,
             "lang": self.lang,
             "lang_setting": self.lang_setting,
             "lang_source": self.lang_source,
             "rebuilding": rebuilding,
-            "ui_prefs": _sanitize_ui_prefs(cfg.get("ui_prefs") or {}),
+            "ui_prefs": out_prefs,
         }
 
     def get_tile_png(self, style: str, lod: int, col: int, row: int) -> bytes | None:
@@ -433,14 +483,40 @@ class GhostPadRuntime:
         tick = 0
         while not self.stop_event.is_set():
             frame = self._live_reader.read_live_frame()
+            lang_changed = False
+            if self.lang_setting == "auto" and tick % 45 == 0:
+                eff_lang, src = detect_game_language(self.game_dir)
+                if eff_lang != self.lang:
+                    self.lang = eff_lang
+                    self.lang_source = src
+                    lang_changed = True
+                    self.trigger_rebuild()
+
             with self._state_lock:
                 prefs = dict(self._ui_prefs)
+                cur_prog_snap = dict(self._progress)
+
+            new_prog, prog_changed = self._save_sync.process_live_tick(frame, cur_prog_snap)
+            if prog_changed:
+                saved = save_progress(new_prog)
+                with self._state_lock:
+                    self._progress = saved
+                    self._progress_version += 1
+
             tac = analyze_tactical_state(frame, heightmap=self._heightmap, prefs=prefs)
             frame["tactical"] = tac
             with self._sse_cond:
                 prev_mode = self._latest_live.get("mode")
+                frame["progress_version"] = self._progress_version
+                frame["lang"] = self.lang
                 self._latest_live = frame
-                if frame.get("mode") == "live" or prev_mode != frame.get("mode") or tick % 10 == 0:
+                if (
+                    frame.get("mode") == "live"
+                    or prev_mode != frame.get("mode")
+                    or prog_changed
+                    or lang_changed
+                    or tick % 10 == 0
+                ):
                     self._live_seq += 1
                     self._sse_cond.notify_all()
             tick += 1
@@ -529,6 +605,9 @@ class GhostPadHTTPHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/debug/probe":
             self._send_json(200, self.runtime._live_reader.get_debug_probe())
+            return
+        if path == "/api/debug/save_probe":
+            self._send_json(200, self.runtime._save_sync.get_save_probe())
             return
         if path == "/api/stream":
             self._handle_sse()
@@ -619,6 +698,14 @@ class GhostPadHTTPHandler(BaseHTTPRequestHandler):
             self.runtime._live_reader.set_simulated_frame(body if body and body.get("enabled", True) else None)
             self._send_json(200, {"ok": True})
             return
+        if path == "/api/shutdown":
+            client_ip = self.client_address[0] if self.client_address else ""
+            if not self.runtime.allow_takeover or client_ip not in ("127.0.0.1", "::1"):
+                self._send_json(403, {"error": "Shutdown refused"})
+                return
+            self._send_json(200, {"ok": True, "stopping": True})
+            threading.Timer(0.05, self.runtime.stop_event.set).start()
+            return
         self._send_json(404, {"error": "Route not found"})
 
     def do_PUT(self) -> None:
@@ -683,6 +770,7 @@ def create_server(
     lan: bool = False,
     rebuild: bool = False,
     telemetry_ptr: int | None = None,
+    allow_takeover: bool = False,
 ) -> tuple[GhostPadHTTPServer, GhostPadRuntime]:
     settings = load_settings()
     gdir = game_dir or get_game_dir()
@@ -697,6 +785,7 @@ def create_server(
         lan=lan,
         port=port,
         telemetry_ptr=telemetry_ptr,
+        allow_takeover=allow_takeover,
     )
     srv = GhostPadHTTPServer((host, port), runtime)
     runtime.port = srv.server_address[1]

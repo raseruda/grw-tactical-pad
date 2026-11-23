@@ -1,4 +1,4 @@
-"""Motor de análise tática furtiva: acústica de armas, campo de visão inimigo e testemunhas para Player e Aliados."""
+"""Motor de análise tática furtiva: acústica de armas, campo de visão por facção e testemunhas para Player e Aliados."""
 from __future__ import annotations
 
 import math
@@ -6,6 +6,8 @@ from typing import Any
 
 from anvil_formats import HeightmapSampler
 from grw_catalog_db import WEAPON_ACOUSTICS
+
+DEFAULT_ALERT_FACTIONS: tuple[str, ...] = ("santa_blanca", "unidad")
 
 
 def _dist3(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
@@ -34,6 +36,31 @@ def _pos3(obj: dict[str, Any], use_head: bool = True) -> tuple[float, float, flo
     return float(obj.get("x", 0.0)), float(obj.get("y", 0.0)), float(obj.get("z", 0.0)) + (1.6 if use_head else 0.0)
 
 
+def _allowed_factions(
+    prefs: dict[str, Any] | None,
+    key: str,
+    default: tuple[str, ...] = DEFAULT_ALERT_FACTIONS,
+) -> set[str]:
+    if not prefs or key not in prefs or prefs[key] is None:
+        return set(default)
+    raw = prefs[key]
+    if isinstance(raw, (list, tuple, set)):
+        return {str(x) for x in raw if str(x)}
+    return set(default)
+
+
+def _collect_frame_npcs(frame: dict[str, Any]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for bucket in ("npcs", "enemies", "rebels", "civilians"):
+        for npc in frame.get(bucket) or []:
+            nid = str(npc.get("id") or id(npc))
+            if nid not in seen:
+                seen.add(nid)
+                merged.append(npc)
+    return merged
+
+
 def resolve_gunshot_radius(
     weapon_class: str | None,
     suppressed: bool | None,
@@ -60,7 +87,7 @@ def evaluate_safe_fire(
     enemies: list[dict[str, Any]],
     prefs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Avalia se disparar a arma equipada agora pode ser ouvido por algum inimigo próximo."""
+    """Avalia se disparar a arma equipada agora pode ser ouvido pelos grupos configurados."""
     p = prefs or {}
     if not player:
         return {"safe": True, "hear_radius_m": 0.0, "weapon_class": "ar", "suppressed": True, "listener_count": 0, "listeners": []}
@@ -72,20 +99,23 @@ def evaluate_safe_fire(
         str(p.get("weaponOverrideSuppressed") or "auto"),
         fallback_suppressed=True,
     )
+    sound_factions = _allowed_factions(p, "soundFactions")
     ppos = _pos3(player, use_head=False)
     listeners: list[dict[str, Any]] = []
     for en in enemies:
         if not en.get("alive", True):
             continue
+        fac = str(en.get("faction", "santa_blanca"))
+        if fac not in sound_factions:
+            continue
         epos = _pos3(en, use_head=False)
         d = _dist3(ppos, epos)
-        # Inimigos já em alerta ("suspected"/"hunted") ganham ~5m extras de percepção auditiva no GRW
-        alert_bonus = 5.0 if en.get("alert") in ("suspected", "hunted", "engaged") else 0.0
+        alert_bonus = 5.0 if en.get("alert") in ("suspected", "hostile", "hunted", "engaged") else 0.0
         if d <= radius_m + alert_bonus:
             listeners.append({
                 "id": en["id"],
                 "dist_m": round(d, 1),
-                "faction": en.get("faction", "santa_blanca"),
+                "faction": fac,
                 "alert": en.get("alert", "unaware"),
                 "u": en.get("u"),
                 "v": en.get("v"),
@@ -110,7 +140,7 @@ def _find_aimed_enemy(
     heightmap: HeightmapSampler | None = None,
     use_terrain_los: bool = True,
 ) -> dict[str, Any] | None:
-    """Seleciona o inimigo mais alinhado dentro do cone angular da mira do atirador."""
+    """Seleciona o alvo mais alinhado dentro do cone angular da mira do atirador."""
     adir = _norm3(aim_dir)
     best: tuple[float, float, dict[str, Any]] | None = None
     for en in enemies:
@@ -123,7 +153,6 @@ def _find_aimed_enemy(
                 continue
             udir = (vec[0] / dist, vec[1] / dist, vec[2] / dist)
             ang = _clamp_deg_from_cos(_dot3(adir, udir))
-            # Margem ligeiramente maior a curtíssima distância (<12m) por largura do tronco/cabeça
             effective_cone = cone_deg + (1.5 if dist < 12.0 else 0.0)
             if ang <= effective_cone:
                 if use_terrain_los and heightmap and heightmap.has_data():
@@ -143,7 +172,7 @@ def _check_visual_witness(
     heightmap: HeightmapSampler | None,
     use_terrain_los: bool,
 ) -> dict[str, Any] | None:
-    """Verifica se um inimigo observador vê outro inimigo sendo abatido."""
+    """Verifica se um observador vê outro NPC sendo abatido."""
     obs_head = _pos3(observer, use_head=True)
     tgt_body = _pos3(target, use_head=True)
     vec = (tgt_body[0] - obs_head[0], tgt_body[1] - obs_head[1], tgt_body[2] - obs_head[2])
@@ -159,17 +188,14 @@ def _check_visual_witness(
     dir_to_tgt = (vec[0] / dist, vec[1] / dist, vec[2] / dist)
     ang = _clamp_deg_from_cos(_dot3(look_n, dir_to_tgt))
 
-    # Visão periférica próxima (< 14m) amplia levemente o cone lateral
     allowed_half = max(half_fov_deg, 75.0) if dist <= 14.0 else half_fov_deg
     if ang > allowed_half:
         return None
 
-    # Oclusão por elevação/terreno 3D
     if use_terrain_los:
         if heightmap and heightmap.has_data():
             if not heightmap.has_terrain_los(obs_head, tgt_body):
                 return None
-        # Diferença vertical extrema com linha de visão muito inclinada (> 60°) costuma estar separada por laje/telhado/penhasco
         if abs(vec[2]) > 7.5 and abs(vec[2]) / max(1.0, math.hypot(vec[0], vec[1])) > 1.6:
             return None
 
@@ -190,7 +216,7 @@ def evaluate_aim_shot(
     prefs: dict[str, Any] | None = None,
     is_ally: bool = False,
 ) -> dict[str, Any] | None:
-    """Analisa se o inimigo na mira de `shooter` causará detecção por som ou testemunha visual."""
+    """Analisa se o NPC na mira de `shooter` causará detecção por som ou testemunha visual."""
     p = prefs or {}
     if not shooter.get("is_aiming", False):
         return None
@@ -205,12 +231,17 @@ def evaluate_aim_shot(
         aim_origin = _pos3(shooter, use_head=True)
     aim_dir = (float(aim_dir_raw[0]), float(aim_dir_raw[1]), float(aim_dir_raw[2]))
 
+    sound_factions = _allowed_factions(p, "soundFactions")
+    vision_factions = _allowed_factions(p, "visionFactions")
+    aim_factions = set(DEFAULT_ALERT_FACTIONS) | sound_factions | vision_factions
+    aim_candidates = [e for e in enemies if e.get("alive", True) and str(e.get("faction", "santa_blanca")) in aim_factions]
+
     use_terrain = bool(p.get("useTerrainLos", True))
     cone_deg = float(p.get("allyAimConeDeg", 3.5) if is_ally else p.get("aimConeDeg", 2.8))
     target = _find_aimed_enemy(
         aim_origin,
         aim_dir,
-        enemies,
+        aim_candidates,
         cone_deg=cone_deg,
         max_range_m=350.0,
         heightmap=heightmap,
@@ -248,26 +279,29 @@ def evaluate_aim_shot(
     for en in enemies:
         if not en.get("alive", True) or en.get("id") == target.get("id"):
             continue
-        e_pos = _pos3(en, use_head=False)
-        alert_bonus = 5.0 if en.get("alert") in ("suspected", "hunted", "engaged") else 0.0
+        efac = str(en.get("faction", "santa_blanca"))
 
-        d_gun = _dist3(s_pos, e_pos)
-        d_imp = _dist3(t_pos, e_pos)
-        heard_gun = d_gun <= (hear_radius_m + alert_bonus)
-        heard_imp = impact_noise_m > 0.0 and d_imp <= (impact_noise_m + alert_bonus * 0.5)
-        if heard_gun or heard_imp:
-            sound_witnesses.append({
-                "id": en["id"],
-                "dist_m": round(d_gun if heard_gun else d_imp, 1),
-                "reason": "gunshot" if heard_gun else "impact",
-                "faction": en.get("faction", "santa_blanca"),
-                "u": en.get("u"),
-                "v": en.get("v"),
-            })
+        if efac in sound_factions:
+            e_pos = _pos3(en, use_head=False)
+            alert_bonus = 5.0 if en.get("alert") in ("suspected", "hostile", "hunted", "engaged") else 0.0
+            d_gun = _dist3(s_pos, e_pos)
+            d_imp = _dist3(t_pos, e_pos)
+            heard_gun = d_gun <= (hear_radius_m + alert_bonus)
+            heard_imp = impact_noise_m > 0.0 and d_imp <= (impact_noise_m + alert_bonus * 0.5)
+            if heard_gun or heard_imp:
+                sound_witnesses.append({
+                    "id": en["id"],
+                    "dist_m": round(d_gun if heard_gun else d_imp, 1),
+                    "reason": "gunshot" if heard_gun else "impact",
+                    "faction": efac,
+                    "u": en.get("u"),
+                    "v": en.get("v"),
+                })
 
-        vis = _check_visual_witness(en, target, vision_range_m, half_fov_deg, heightmap, use_terrain)
-        if vis is not None:
-            visual_witnesses.append(vis)
+        if efac in vision_factions:
+            vis = _check_visual_witness(en, target, vision_range_m, half_fov_deg, heightmap, use_terrain)
+            if vis is not None:
+                visual_witnesses.append(vis)
 
     sound_witnesses.sort(key=lambda x: x["dist_m"])
     visual_witnesses.sort(key=lambda x: x["dist_m"])
@@ -314,14 +348,14 @@ def analyze_tactical_state(
     """Executa toda a análise tática (arma equipada, mira do jogador e mira dos aliados Solo/Co-op)."""
     p = prefs or {}
     player = live_frame.get("player")
-    enemies = live_frame.get("enemies") or []
+    npcs = _collect_frame_npcs(live_frame)
     allies = live_frame.get("allies") or []
 
-    safe_fire = evaluate_safe_fire(player, enemies, p)
+    safe_fire = evaluate_safe_fire(player, npcs, p)
 
     player_aim = None
     if player and p.get("showPlayerAimWarning", True):
-        player_aim = evaluate_aim_shot(player, enemies, heightmap=heightmap, prefs=p, is_ally=False)
+        player_aim = evaluate_aim_shot(player, npcs, heightmap=heightmap, prefs=p, is_ally=False)
 
     show_solo = bool(p.get("showAlliesSolo", True))
     show_coop = bool(p.get("showAlliesCoop", True))
@@ -336,7 +370,7 @@ def analyze_tactical_state(
             continue
         filtered_allies.append(ally)
         if p.get("showAllyAimWarning", True):
-            res = evaluate_aim_shot(ally, enemies, heightmap=heightmap, prefs=p, is_ally=True)
+            res = evaluate_aim_shot(ally, npcs, heightmap=heightmap, prefs=p, is_ally=True)
             if res is not None:
                 ally_aims.append(res)
 

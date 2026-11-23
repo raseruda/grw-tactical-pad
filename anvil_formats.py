@@ -440,16 +440,19 @@ def decode_anvil_texture_map(sets: list[bytes]) -> Image.Image | None:
         return None
 
     # Formatos observados no GRW AnvilNext 2.0:
-    # 11 = R8 (1 byte/px), 9 = BC3/DXT5, 7/8 = BC1/DXT1, 0/1 = RGBA8/BGRA8
+    # 11 = R8 (1 byte/px), 9 = BC7 (HUD/Tacmap icons; BC3 fallback), 7/8 = BC1/DXT1, 0/1 = RGBA8/BGRA8
     if fmt == 11 and len(data) >= width * height:
         return Image.frombytes("L", (width, height), data[: width * height]).convert("RGBA")
     if fmt == 9:
-        need = max(1, (width // 4)) * max(1, (height // 4)) * 16
+        need = max(1, (width + 3) // 4) * max(1, (height + 3) // 4) * 16
         if len(data) >= need:
-            rgba = texture2ddecoder.decode_bc3(data[:need], width, height)
+            try:
+                rgba = texture2ddecoder.decode_bc7(data[:need], width, height)
+            except Exception:
+                rgba = texture2ddecoder.decode_bc3(data[:need], width, height)
             return Image.frombytes("RGBA", (width, height), rgba, "raw", "BGRA")
     if fmt in (7, 8):
-        need = max(1, (width // 4)) * max(1, (height // 4)) * 8
+        need = max(1, (width + 3) // 4) * max(1, (height + 3) // 4) * 8
         if len(data) >= need:
             rgba = texture2ddecoder.decode_bc1(data[:need], width, height)
             return Image.frombytes("RGBA", (width, height), rgba, "raw", "BGRA")
@@ -459,10 +462,13 @@ def decode_anvil_texture_map(sets: list[bytes]) -> Image.Image | None:
     # Heurística por tamanho exato restante
     if len(data) == width * height:
         return Image.frombytes("L", (width, height), data).convert("RGBA")
-    if len(data) == max(1, (width // 4)) * max(1, (height // 4)) * 16:
-        rgba = texture2ddecoder.decode_bc3(data, width, height)
+    if len(data) == max(1, (width + 3) // 4) * max(1, (height + 3) // 4) * 16:
+        try:
+            rgba = texture2ddecoder.decode_bc7(data, width, height) if fmt == 9 else texture2ddecoder.decode_bc3(data, width, height)
+        except Exception:
+            rgba = texture2ddecoder.decode_bc3(data, width, height)
         return Image.frombytes("RGBA", (width, height), rgba, "raw", "BGRA")
-    if len(data) == max(1, (width // 4)) * max(1, (height // 4)) * 8:
+    if len(data) == max(1, (width + 3) // 4) * max(1, (height + 3) // 4) * 8:
         rgba = texture2ddecoder.decode_bc1(data, width, height)
         return Image.frombytes("RGBA", (width, height), rgba, "raw", "BGRA")
     return None

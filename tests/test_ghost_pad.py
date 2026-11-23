@@ -14,9 +14,17 @@ if str(ROOT) not in sys.path:
 
 import config
 from anvil_formats import ForgeArchive, HeightmapSampler, WmapReader, decode_anvil_texture_map
-from grw_asset_builder import ensure_cache_built
-from grw_catalog_db import ATTACHMENTS_DB, BONUS_MEDALS, PROVINCES, WEAPON_ACOUSTICS, WEAPONS_DB, build_static_databases
-from grw_memory import GRWLiveReader
+from grw_asset_builder import FORGE_ICON_MAP, ensure_cache_built
+from grw_catalog_db import (
+    ATTACHMENTS_DB,
+    BONUS_MEDALS,
+    PROVINCES,
+    WEAPON_ACOUSTICS,
+    WEAPONS_DB,
+    build_static_databases,
+)
+from grw_memory import EALERT_MAP, EFACTION_MAP, GRWLiveReader, GRWTelemetryState, TELEMETRY_VERSION
+from grw_save_sync import AutoProgressSync
 from tactical_engine import analyze_tactical_state, evaluate_aim_shot, evaluate_safe_fire
 
 WILDLANDS_DIR = Path(r"C:\Program Files (x86)\Steam\steamapps\common\Wildlands")
@@ -75,6 +83,46 @@ class TestCatalogAndAssets(unittest.TestCase):
         self.assertTrue(meta["has_wmap"])
         self.assertTrue(meta["has_heatmap"])
         self.assertTrue((config.MASKS_CACHE_DIR / "bolivia_border.png").is_file())
+
+    @unittest.skipUnless((WILDLANDS_DIR / "DataPC.forge").is_file(), "DataPC.forge ausente")
+    def test_all_12_bc7_poi_icons_decoded(self) -> None:
+        from PIL import Image
+        ensure_cache_built(WILDLANDS_DIR, lang="pt-BR", force=False)
+        self.assertEqual(len(FORGE_ICON_MAP), 12)
+        for cat_id in FORGE_ICON_MAP:
+            icon_path = config.ICONS_CACHE_DIR / f"{cat_id}.png"
+            self.assertTrue(icon_path.is_file(), f"Ícone ausente: {cat_id}")
+            im = Image.open(icon_path).convert("RGBA")
+            self.assertEqual(im.size, (32, 32))
+            # Verifica que o canal alpha tem pixels visíveis decodificados em BC7 (não imagem vazia/corrompida)
+            alpha_extrema = im.getchannel("A").getextrema()
+            self.assertGreater(alpha_extrema[1], 16, f"Ícone {cat_id} veio transparente!")
+
+    def test_bidirectional_compatibility_and_province_tasks(self) -> None:
+        _, cat_pt, ct_pt = build_static_databases("pt-BR")
+        weapons_by_id = {w["id"]: w for w in cat_pt["weapons"]}
+        atts_by_id = {a["id"]: a for a in cat_pt["attachments"]}
+
+        m4 = weapons_by_id["wp_m4a1"]
+        self.assertTrue(m4["customizable"])
+        self.assertTrue(len(m4["compatible_attachments"]) >= 4)
+        slots = [grp["slot"] for grp in m4["compatible_attachments"]]
+        self.assertIn("scope", slots)
+        self.assertIn("muzzle", slots)
+        self.assertIn("underbarrel", slots)
+
+        m203 = atts_by_id["att_m203"]
+        self.assertTrue(len(m203["compatible_weapons"]) >= 1)
+        m203_classes = [grp["weapon_class"] for grp in m203["compatible_weapons"]]
+        self.assertIn("ar", m203_classes)
+        ar_grp = next(g for g in m203["compatible_weapons"] if g["weapon_class"] == "ar")
+        self.assertTrue(any(w["id"] == "wp_m4a1" for w in ar_grp["items"]))
+
+        itacua = next(p for p in ct_pt["provinces"] if p["id"] == "itacua")
+        self.assertGreaterEqual(len(itacua["missions"]), 5)
+        self.assertIn("tasks", itacua)
+        for key in ("missions", "weapons", "attachments", "medals", "skill_points", "kingslayer", "rebel_ops", "rally_points", "bases"):
+            self.assertIn(key, itacua["tasks"])
 
 
 class TestTacticalStealthEngine(unittest.TestCase):
@@ -213,28 +261,145 @@ class TestTacticalStealthEngine(unittest.TestCase):
         self.assertEqual(len(res_coop_only["ally_aims"]), 1)
         self.assertEqual(res_coop_only["ally_aims"][0]["shooter_type"], "coop")
 
+    def test_faction_filtered_sound_and_vision(self) -> None:
+        player = self._mk_player("ar", True, is_aiming=True, aim_dir=(0.0, 1.0, 0.0))
+        target = self._mk_enemy("tgt", 0.0, 60.0, look=(0.0, -1.0, 0.0))
+        rebel = {
+            **self._mk_enemy("reb_1", 10.0, 10.0, look=(-1.0, -1.0, 0.0)),
+            "faction": "rebel",
+        }
+        civilian = {
+            **self._mk_enemy("civ_1", 20.0, 60.0, look=(-1.0, 0.0, 0.0)),
+            "faction": "civilian",
+        }
+        npcs = [target, rebel, civilian]
+
+        # Padrão: apenas santa_blanca e unidad são considerados ouvintes / testemunhas
+        res_default = analyze_tactical_state({"player": player, "npcs": npcs}, prefs={})
+        self.assertTrue(res_default["safe_fire"]["safe"])
+        self.assertEqual(res_default["player_aim"]["verdict"], "safe")
+
+        # Ao ativar rebeldes para som e civis para visão, ambos passam a gerar alertas!
+        res_custom = analyze_tactical_state(
+            {"player": player, "npcs": npcs},
+            prefs={
+                "soundFactions": ["santa_blanca", "unidad", "rebel"],
+                "visionFactions": ["santa_blanca", "unidad", "civilian"],
+                "enemyVisionRangeM": 55,
+            },
+        )
+        self.assertFalse(res_custom["safe_fire"]["safe"])
+        self.assertEqual(res_custom["player_aim"]["visual_witness_count"], 1)
+
+
+class TestTelemetryLanguageAndAutoSync(unittest.TestCase):
+    def test_launcher_game_language_byte_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            docs = Path(td)
+            cfg_dir = docs / "My Games" / "Ghost Recon Wildlands"
+            cfg_dir.mkdir(parents=True)
+            lang_file = cfg_dir / "LAUNCHER_GAME_LANGUAGE"
+
+            for byte_val, expected in ((8, "pt-BR"), (1, "en-US"), (7, "es-LA"), (9, "ja-JP")):
+                lang_file.write_bytes(bytes([byte_val]))
+                self.assertEqual(config.read_grw_launcher_language(docs), expected)
+
+            lang_file.write_bytes(b"\x00")
+            self.assertIsNone(config.read_grw_launcher_language(docs))
+
+    def test_telemetry_v2_struct_and_faction_maps(self) -> None:
+        import ctypes
+        self.assertEqual(TELEMETRY_VERSION, 2)
+        self.assertEqual(ctypes.sizeof(GRWTelemetryState), 193888)
+        self.assertEqual(EFACTION_MAP[0], "civilian")
+        self.assertEqual(EFACTION_MAP[1], "civilian")
+        self.assertEqual(EFACTION_MAP[2], "ghost")
+        self.assertEqual(EFACTION_MAP[3], "santa_blanca")
+        self.assertEqual(EFACTION_MAP[4], "santa_blanca")
+        self.assertEqual(EFACTION_MAP[5], "unidad")
+        self.assertEqual(EFACTION_MAP[6], "santa_blanca")
+        self.assertEqual(EFACTION_MAP[7], "rebel")
+        self.assertEqual(EALERT_MAP[3], "suspected")
+        self.assertEqual(EALERT_MAP[6], "hostile")
+
+    def test_auto_progress_sync_save_fid_and_proximity(self) -> None:
+        import struct
+        import zlib
+        with tempfile.TemporaryDirectory() as td:
+            saves_dir = Path(td)
+            sync = AutoProgressSync(live_saves_dir=saves_dir)
+            fake_fid = 0x1122334455667788
+            sync._forge_ids = {
+                "weapons": {"wp_m4a1": [{"fid": fake_fid, "name": "W_ASR_M4A1"}]},
+                "attachments": {},
+                "provinces": {"libertad": [{"fid": 0x9988776655443322, "name": "UI_Libertad_Completed"}]},
+            }
+            _, _, ct = build_static_databases("pt-BR")
+            sync._provinces = ct["provinces"]
+            sync._pois = [
+                {
+                    "id": "poi_att_panoramic",
+                    "item_id": "att_panoramic",
+                    "cat": "attachment_case",
+                    "u": 0.525,
+                    "v": 0.620,
+                }
+            ]
+            sync._catalog_loaded = True
+
+            payload = b"HEADER" + struct.pack("<Q", fake_fid) + b"UI_Libertad_Completed"
+            (saves_dir / "slot_0.bin").write_bytes(zlib.compress(payload))
+
+            frame = {
+                "mode": "live",
+                "save_read_seq": 1,
+                "save_write_seq": 1,
+                "player": {"u": 0.525, "v": 0.620},
+            }
+            updated, changed = sync.process_live_tick(frame, {}, save_paths=[])
+            self.assertTrue(changed)
+            self.assertIn("wp_m4a1", updated["collected_items"])
+            self.assertIn("att_panoramic", updated["collected_items"])
+            self.assertIn("poi_att_panoramic", updated["completed_pois"])
+            self.assertIn("libertad", updated["defeated_bosses"])
+            self.assertTrue(len(updated["completed_missions"]) >= 1)
+
+            # Não re-adiciona item se usuário desmarcou manualmente depois do auto-sync!
+            updated["collected_items"].remove("wp_m4a1")
+            updated2, changed2 = sync.process_live_tick(
+                {"mode": "live", "save_read_seq": 2, "save_write_seq": 2, "player": {"u": 0.525, "v": 0.620}},
+                updated,
+                save_paths=[],
+            )
+            self.assertFalse(changed2)
+            self.assertNotIn("wp_m4a1", updated2["collected_items"])
+
 
 class TestServerAndPersistence(unittest.TestCase):
     def test_http_server_routes_and_settings_roundtrip(self) -> None:
         import time
         import threading
+        import urllib.error
         import urllib.request
         from server import create_server
 
-        srv, runtime = create_server(game_dir=WILDLANDS_DIR, port=0, lan=False)
+        orig_settings = config.SETTINGS_PATH.read_bytes() if config.SETTINGS_PATH.is_file() else None
+        srv, runtime = create_server(game_dir=WILDLANDS_DIR, port=0, lan=False, allow_takeover=True)
         th = threading.Thread(target=srv.serve_forever, daemon=True)
         th.start()
         base = f"http://127.0.0.1:{runtime.port}"
         try:
             # Aguarda cache pronto
+            st = {}
             for _ in range(40):
-                st = json.loads(urllib.request.urlopen(f"{base}/api/status", timeout=5).read().decode())
+                with urllib.request.urlopen(f"{base}/api/status", timeout=5) as r:
+                    st = json.loads(r.read().decode())
                 if st["build"]["state"] == "ready":
                     break
                 time.sleep(0.15)
             self.assertEqual(st["build"]["state"], "ready")
 
-            # Testa persistência completa das opções customizadas
+            # Testa persistência completa das opções customizadas + novas opções v1.1.0
             custom = {
                 "showEnemyDirection": False,
                 "showEnemyVisionCones": True,
@@ -245,6 +410,11 @@ class TestServerAndPersistence(unittest.TestCase):
                 "bulletImpactNoiseM": 16,
                 "weaponOverrideClass": "sniper",
                 "weaponOverrideSuppressed": "unsuppressed",
+                "weaponNoiseRingMode": "aiming",
+                "visionFactions": ["santa_blanca", "unidad", "civilian"],
+                "soundFactions": ["santa_blanca", "rebel"],
+                "showFactionRebel": False,
+                "selectedProvince": "itacua",
             }
             req = urllib.request.Request(
                 f"{base}/api/settings",
@@ -252,22 +422,75 @@ class TestServerAndPersistence(unittest.TestCase):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            post_res = json.loads(urllib.request.urlopen(req, timeout=5).read().decode())
+            with urllib.request.urlopen(req, timeout=5) as r:
+                post_res = json.loads(r.read().decode())
             self.assertTrue(post_res["ok"])
-            got = json.loads(urllib.request.urlopen(f"{base}/api/settings", timeout=5).read().decode())
+
+            # Atualização parcial de idioma NÃO pode apagar ui_prefs já salvos!
+            req_lang = urllib.request.Request(
+                f"{base}/api/settings",
+                data=json.dumps({"lang": "en-US"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req_lang, timeout=5) as r:
+                r.read()
+
+            with urllib.request.urlopen(f"{base}/api/settings", timeout=5) as r:
+                got = json.loads(r.read().decode())
+            self.assertEqual(got["lang"], "en-US")
             for k, v in custom.items():
                 self.assertEqual(got["ui_prefs"][k], v)
 
-            # Testa HTML, estáticos e tiles satélite + heatmap
-            html = urllib.request.urlopen(f"{base}/", timeout=5).read().decode()
+            # Testa HTML, estáticos, compatibilidade, ícones oficiais e tiles satélite + heatmap
+            with urllib.request.urlopen(f"{base}/", timeout=5) as r:
+                html = r.read().decode()
             self.assertIn("GHOST TACTICAL PAD", html)
-            cat = json.loads(urllib.request.urlopen(f"{base}/api/static/catalog", timeout=5).read().decode())
+            with urllib.request.urlopen(f"{base}/api/static/catalog", timeout=5) as r:
+                cat = json.loads(r.read().decode())
             self.assertGreaterEqual(len(cat["weapons"]), 55)
             if WILDLANDS_DIR.is_dir():
-                t_sat = urllib.request.urlopen(f"{base}/api/tile/satellite/6/0/0.png", timeout=5).read()
-                t_heat = urllib.request.urlopen(f"{base}/api/tile/heatmap/6/0/0.png", timeout=5).read()
+                with urllib.request.urlopen(f"{base}/api/tile/satellite/6/0/0.png", timeout=5) as r:
+                    t_sat = r.read()
+                with urllib.request.urlopen(f"{base}/api/tile/heatmap/6/0/0.png", timeout=5) as r:
+                    t_heat = r.read()
                 self.assertTrue(t_sat.startswith(b"\x89PNG"))
                 self.assertTrue(t_heat.startswith(b"\x89PNG"))
+                with urllib.request.urlopen(f"{base}/api/icon/weapon_case.png", timeout=5) as r:
+                    t_icon = r.read()
+                self.assertTrue(t_icon.startswith(b"\x89PNG"))
+
+            # Testa takeover via POST /api/shutdown (200 quando allow_takeover=True)
+            req_sd = urllib.request.Request(f"{base}/api/shutdown", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req_sd, timeout=5) as r:
+                sd_res = json.loads(r.read().decode())
+            self.assertTrue(sd_res["ok"])
+            self.assertTrue(runtime.stop_event.wait(timeout=1.5))
+        finally:
+            runtime.close()
+            srv.shutdown()
+            srv.server_close()
+            if orig_settings is not None:
+                config.SETTINGS_PATH.write_bytes(orig_settings)
+            elif config.SETTINGS_PATH.is_file():
+                config.SETTINGS_PATH.unlink()
+
+    def test_shutdown_rejected_when_embedded(self) -> None:
+        import threading
+        import urllib.error
+        import urllib.request
+        from server import create_server
+
+        srv, runtime = create_server(game_dir=WILDLANDS_DIR, port=0, lan=False, allow_takeover=False)
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        base = f"http://127.0.0.1:{runtime.port}"
+        try:
+            req = urllib.request.Request(f"{base}/api/shutdown", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    r.read()
+            self.assertEqual(ctx.exception.code, 403)
         finally:
             runtime.close()
             srv.shutdown()

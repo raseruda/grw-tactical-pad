@@ -9,25 +9,27 @@ Run it automatically on a **second monitor** alongside `GRW.exe` or open it from
 
 ## Features
 
-- **Multi-LOD 32K Tactical Map of Bolivia** — Extracts tiles on demand directly from your local `gr.wmap` (Satellite), `gr_h.wmap` (Skell Technology Heatmap), and `DataPC.forge` (official province masks & AnvilNext 2.0 icons) at 60 FPS (`Canvas 2D` + zoom/pan + player trail + custom tactical pins). Zero copyrighted game assets are bundled.
-- **Live Stealth Telemetry & "Safe to Fire" HUD** — Tracks nearby enemies, head look direction, FOV vision cones, your equipped weapon's suppressed/unsuppressed acoustic radius, and evaluates **Safe to Fire** in real time.
-- **Automatic Aim Shot & Kill-Witness Warnings** — When you aim at an enemy, Ghost Tactical Pad checks every other enemy nearby and warns immediately if:
-  1. Anyone would **hear** the gunshot or bullet impact (**Sound Alert**).
-  2. Anyone has line of sight (head orientation, FOV cone, and 3D / heightmap terrain occlusion) to **see** the target being killed (**Visual Witness Alert**).
-- **Solo AI & Co-op Ally Tracking** — Recognizes both Solo AI squadmates and Co-op human teammates, automatically firing the same gunshot-hearing and kill-witness alerts whenever an ally aims at an enemy so you can coordinate silent sync shots.
-- **Complete Weapons, Attachments & Intel Database** — Searchable catalog covering **59 weapons** (with acoustic profiles), **66 attachments**, **10 bonus medals**, **21 provinces**, **4 cartel wings**, and **12 POI categories**, showing exact province/region unlock locations with one-click **Show on Map**, progress checkboxes, and cartel hierarchy tracking.
-- **100% Customizable Overlays & Rules** — Toggle and tune every overlay, vision cone, noise ring, ally filter (Solo/Co-op), FOV width/range, and alert threshold individually. Preferences persist automatically to `data/settings.json` and browser storage.
-- **Zero-AV-Flag Standalone Distribution** — Uses a pure native `winmm.dll` x64 proxy (`KERNEL32.dll` import only) paired with the official PSF embedded Python 3.12 runtime — **0 `.exe` files** and **0 nested archives** in the release zip. EasyAntiCheat is no longer shipped with Steam Title Update 25 (`GRW.exe`), allowing `winmm.dll` telemetry cleanly in Solo and Co-op.
+- **Multi-LOD 32K Tactical Map of Bolivia** — Extracts tiles on demand directly from your local `gr.wmap` (Satellite), `gr_h.wmap` (Skell Technology Heatmap), and `DataPC.forge` (province masks and **official BC7 HUD icons** for all 12 POI categories) at 60 FPS (`Canvas 2D` + zoom/pan + player trail + custom tactical pins). Zero copyrighted game assets are bundled.
+- **Faction Classification & Live Alert States** — Separates every NPC by faction with distinct map colors (**Blue** for Ghosts & Co-op allies, **Mustard Yellow** for Santa Blanca, **Purple** for La Unidad, **Green** for Rebels, and **White** for Civilians) plus dynamic alert outlines (**Orange ring** = Suspicious, **Red ring** = Hostile).
+- **Live Stealth Telemetry & Customizable Detection Groups** — Tracks FOV vision cones, hearing rings, and equipped weapon noise radius (**Always visible** or **Only when aiming**). By default, sound and vision detection target **Santa Blanca** and **La Unidad**, with a faction matrix in Settings to toggle any group individually.
+- **Automatic Aim Shot & Kill-Witness Warnings** — When you (or any Solo AI / Co-op ally) aim at an enemy, Ghost Tactical Pad checks nearby targets and warns immediately if anyone would **hear** the gunshot/impact (**Sound Alert**) or have line of sight to **see** the takedown (**Visual Witness Alert**).
+- **Automatic Progression Sync & Armory Compatibility** — Automatically detects unlocked weapons, attachments, missions, bosses, provinces, and nearby POIs from live save activity and game files without manual checkboxes:
+  - Click any weapon to inspect all **compatible attachments grouped by category** (Optics, Muzzle, Barrel, Magazine, Underbarrel, Rail, Stock).
+  - Click any attachment to inspect all **compatible weapons grouped by weapon class**.
+  - Click any province in **Cartel & Provinces** to see a full breakdown of **Completed (`✔`)** vs **Remaining (`○`)** missions, weapons, attachments, medals, skill points, Kingslayer files, rebel ops, and bases.
+- **Auto Game Language Sync (16 Languages)** — Reads Wildlands' active `LAUNCHER_GAME_LANGUAGE` configuration and follows the game's configured language automatically.
+- **Real-Time Persistence & Single-Instance Protection** — All settings, tactical toggles, POI filters, camera position, and active tab persist continuously in real time. Prevents duplicate windows during Steam → Ubisoft Connect bootstrap handoff.
+- **Standalone Executable (`GhostTacticalPad.exe`)** — Runs out-of-the-box with zero system Python or external dependencies required.
 
 ---
 
 ## Installation (Pre-Built Release)
 
-1. Download and extract **`GhostPad_GRW_v1.0.0.zip`**.
-2. Run **`Instalar Mod na Pasta do Jogo.bat`** *or* copy `winmm.dll` and the `GhostPad\` folder next to `GRW.exe` inside your game directory (e.g. `C:\Program Files (x86)\Steam\steamapps\common\Wildlands\`).
-3. Launch **Ghost Recon Wildlands** normally. Ghost Tactical Pad starts its local HTTP/SSE server on port **`8766`** and opens automatically on your secondary display (or at `http://127.0.0.1:8766` / your LAN IP shown in the top bar).
+1. Download and extract **`GhostPad_GRW_v1.1.0.zip`**.
+2. Run **`GhostPad\Instalar Mod.bat`** *or* copy `winmm.dll`, `GhostTacticalPad.exe`, and `GhostPad\` next to `GRW.exe` inside your game directory (e.g. `C:\Program Files (x86)\Steam\steamapps\common\Wildlands\`).
+3. Launch **Ghost Recon Wildlands** normally. Ghost Tactical Pad starts its local HTTP/SSE server on port **`8766`** and opens automatically on your secondary display (or at `http://127.0.0.1:8766` / your LAN IP shown in the Settings modal).
 
-> **Standalone / Offline Mode:** You can also run **`Iniciar Ghost Pad.bat`** (`python launcher.py`) anytime without opening the game to browse the Bolivia map, plan routes, and check where to find every weapon, attachment, medal, and cartel target.
+> **Standalone / Offline Mode:** Double-click **`GhostTacticalPad.exe`** (or **`Iniciar Ghost Pad.bat`**) anytime without opening the game and without having Python installed on your PC.
 
 ---
 
@@ -44,24 +46,13 @@ pip install -r requirements.txt
 python mod_native/build_proxy.py
 ```
 
-`build_proxy.py` compiles `winmm.dll` (`181` forwarded WinMM exports + Title Update 25 read-only observer hooks + native LZO1X decompressor), packages the official PSF embedded Python runtime into `mod_release/`, validates clean PE/zip rules (`0` `.exe` files, `0` nested archives, `KERNEL32.dll`-only import table), and produces `GhostPad_GRW_v1.0.0.zip`.
+`build_proxy.py` compiles `winmm.dll` (`181` forwarded WinMM exports + Title Update 25 NPC/camera/weapon/`UPLAY_SAVE` observer hooks + native LZO1X decompressor) and `GhostTacticalPad.exe` (native standalone launcher loading the bundled embedded Python 3.12 runtime), validates clean PE/zip rules, and produces `GhostPad_GRW_v1.1.0.zip`.
 
 ### Running Tests
 
 ```bat
 python -m unittest discover -s tests -v
 ```
-
----
-
-## Customization & Controls
-
-Open the **Settings** panel in the UI to customize every aspect independently:
-- Map layer (**Satellite**, **Skell Heatmap**), province borders, cartel hierarchy overlays, player trail, and tactical drone marker.
-- Acoustic circles (unsuppressed/suppressed weapon noise & bullet impact distance) and "Safe to Fire" HUD banner.
-- Enemy FOV cones (detection range, horizontal cone angle, terrain occlusion toggle).
-- Ally alerts (**Solo AI** and/or **Co-op Teammates** aim detection for heard shots and visual kill witnesses).
-- Automatic language switching (**English** / **Português (BR)**, auto-detected from Steam ACF or Windows locale).
 
 ---
 
@@ -86,10 +77,10 @@ O **Ghost Tactical Pad** é um companheiro tático gratuito e open-source em seg
 
 ## Recursos Principais
 
-- **Mapa Tático 32K da Bolívia em 60 FPS** — Lê diretamente os arquivos locais do seu jogo (`gr.wmap` Satélite, `gr_h.wmap` Mapa de Calor Skell e `DataPC.forge` com máscaras de província e ícones oficiais), sem distribuir nenhum arquivo protegido do jogo.
-- **Telemetria Stealth & Indicador "Seguro para Atirar"** — Exibe posição dos inimigos, direção do olhar, cones de visão, raio de barulho da arma equipada (com e sem silenciador) e indicador ao vivo informando se um disparo agora seria ouvido ou visto.
-- **Detecção Automática ao Mirar (Som + Testemunha Visual)** — Ao mirar em qualquer inimigo, o sistema avisa automaticamente se algum outro inimigo vai **ouvir o tiro / impacto** ou **ver o abate** (considerando campo de visão e oclusão de terreno).
-- **Aliados Solo (IA) e Co-op (Jogadores)** — Reconhece os membros do seu esquadrão no modo Solo e aliados humanos no Co-op, gerando os mesmos alertas de som e testemunha visual sempre que um aliado mirar em um inimigo.
-- **Database Completo de Armas, Acessórios e Itens** — Catálogo pesquisável com **59 armas**, **66 acessórios**, **10 medalhas de bônus**, **21 províncias**, **4 alas do cartel** e **12 categorias de POI**, mostrando **onde conseguir cada item** com botão **Mostrar no Mapa** e checklist de progresso.
-- **Totalmente Customizável** — Todos os overlays, raios acústicos, ângulos de visão, filtros de aliados Solo/Co-op, alertas visuais/sonoros e marcadores podem ser ativados, desativados e ajustados individualmente.
-- **Instalação Limpa e Segura** — Proxy nativo `winmm.dll` + Python 3.12 oficial embarcado (`0` `.exe`, `0` zips aninhados). Basta extrair `GhostPad_GRW_v1.0.0.zip` e executar `Instalar Mod na Pasta do Jogo.bat` (ou copiar `winmm.dll` e `GhostPad\` para a pasta de `GRW.exe`), ou abrir `Iniciar Ghost Pad.bat` para usar o mapa e catálogo offline.
+- **Mapa Tático 32K da Bolívia em 60 FPS** — Lê diretamente os arquivos locais do seu jogo (`gr.wmap` Satélite, `gr_h.wmap` Mapa de Calor Skell e `DataPC.forge` com máscaras de província e os **ícones oficiais BC7 do jogo** para todos os filtros), sem distribuir nenhum arquivo protegido do jogo.
+- **Facções, Cores e Estados Dinâmicos de Alerta** — Classifica automaticamente **Ghosts/Co-op (Azul)**, **Santa Blanca (Amarelo mostarda)**, **La Unidad (Roxo)**, **Rebeldes (Verde)** e **Civis (Branco)**, exibindo contorno **Laranja** quando desconfiados e **Vermelho** quando hostis.
+- **Cones de Visão, Raio Sonoro e Grupos Customizáveis** — Detecção acústica e visual padrão ativada apenas para Santa Blanca e La Unidad (personalizável por grupo na interface), além de opção para exibir o raio sonoro da arma **Sempre visível** ou **Só ao mirar**.
+- **Alertas Automáticos ao Mirar (Você + Aliados Solo IA / Co-op)** — Avisa em tempo real se alguém vai **ouvir** o disparo/impacto ou **ver** o abate ao mirar você ou seus aliados.
+- **Reconhecimento Automático & Compatibilidade Arma ↔ Acessório** — Identifica automaticamente armas, acessórios, missões, chefes e tarefas concluídas/faltantes por província. Clicar em uma arma mostra todos os acessórios compatíveis por categoria; clicar em um acessório mostra todas as armas compatíveis por classe.
+- **Idioma Sincronizado com o Jogo** — Lê automaticamente `LAUNCHER_GAME_LANGUAGE` do jogo para acompanhar o idioma configurado.
+- **Instância Única, Salvamento Contínuo & Executável Independente** — Corrige abertura dupla na inicialização Steam/Ubisoft, salva todas as preferências em tempo real e inclui **`GhostTacticalPad.exe`** independente (não exige Python instalado no PC).

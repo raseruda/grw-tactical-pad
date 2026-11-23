@@ -237,6 +237,14 @@ def move_window_to_monitor(pid: int | None, mon: dict[str, Any], timeout_s: floa
 
 
 def _launch_browser_window(url: str, mon: dict[str, Any], browser: Path | None) -> tuple[subprocess.Popen[Any] | None, int | None]:
+    existing = _find_app_window(None)
+    if existing:
+        _user32.ShowWindow(existing, SW_RESTORE)
+        _user32.SetWindowPos(existing, None, mon["x"], mon["y"], mon["width"], mon["height"], SWP_NOZORDER | SWP_SHOWWINDOW)
+        _user32.ShowWindow(existing, SW_MAXIMIZE)
+        _user32.SetForegroundWindow(existing)
+        return None, existing
+
     if browser is not None:
         profile_dir = CACHE_DIR / "edge_profile"
         profile_dir.mkdir(parents=True, exist_ok=True)
@@ -256,6 +264,18 @@ def _launch_browser_window(url: str, mon: dict[str, Any], browser: Path | None) 
     _log("No Chromium browser found; using default browser.")
     webbrowser.open(url)
     return None, None
+
+
+def _request_standalone_shutdown(port: int) -> bool:
+    """Solicita encerramento gracioso de instância standalone para que o jogo assuma a porta principal."""
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/shutdown", data=b"{}", method="POST")
+        with urllib.request.urlopen(req, timeout=0.8) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
 
 
 def _write_hwnd_slot(hwnd_slot_addr: int, hwnd: int | None) -> None:
@@ -295,23 +315,38 @@ def run_embedded(game_dir: str, hwnd_slot_addr: int = 0, telemetry_addr: int = 0
     srv: Any = None
     runtime: Any = None
     try:
+        settings = load_settings()
+        preferred_port = int(settings.get("port", DEFAULT_PORT))
         mutex = _kernel32.CreateMutexW(None, False, "Local\\GRW_GhostTacticalPad_Launcher_Mutex")
         if ctypes.get_last_error() == 183:
-            hwnd = _find_app_window(None)
-            if hwnd:
-                _user32.ShowWindow(hwnd, SW_MAXIMIZE)
-                _user32.SetForegroundWindow(hwnd)
-                _write_hwnd_slot(hwnd_slot_addr, hwnd)
-            return
+            # Se houver uma instância standalone aberta, pede transição graciosa para o modo in-process
+            _request_standalone_shutdown(preferred_port)
+            took_over = False
+            for _ in range(18):
+                if mutex:
+                    _kernel32.CloseHandle(mutex)
+                    mutex = None
+                time.sleep(0.15)
+                mutex = _kernel32.CreateMutexW(None, False, "Local\\GRW_GhostTacticalPad_Launcher_Mutex")
+                if mutex and ctypes.get_last_error() != 183:
+                    took_over = True
+                    break
+            if not took_over:
+                hwnd = _find_app_window(None)
+                if hwnd:
+                    _user32.ShowWindow(hwnd, SW_MAXIMIZE)
+                    _user32.SetForegroundWindow(hwnd)
+                    _write_hwnd_slot(hwnd_slot_addr, hwnd)
+                return
 
         mon = pick_secondary_monitor()
         browser = find_browser_executable()
         env_gdir = os.environ.get("GRW_GAME_DIR")
         gdir = Path(env_gdir) if env_gdir else (Path(game_dir) if game_dir else get_game_dir())
-        settings = load_settings()
-        preferred_port = int(settings.get("port", DEFAULT_PORT))
         port = pick_free_port(preferred_port)
-        srv, runtime = create_server(game_dir=gdir, port=port, lan=False, telemetry_ptr=telemetry_addr or None)
+        srv, runtime = create_server(
+            game_dir=gdir, port=port, lan=False, telemetry_ptr=telemetry_addr or None, allow_takeover=False
+        )
         threading.Thread(target=srv.serve_forever, daemon=True, name="HTTPServer").start()
 
         url = f"http://127.0.0.1:{runtime.port}"
@@ -377,7 +412,7 @@ def main() -> None:
     settings = load_settings()
     preferred_port = args.port if args.port > 0 else int(settings.get("port", DEFAULT_PORT))
     port = preferred_port if args.port > 0 else pick_free_port(preferred_port)
-    srv, runtime = create_server(game_dir=gdir, port=port, lan=args.lan)
+    srv, runtime = create_server(game_dir=gdir, port=port, lan=args.lan, allow_takeover=True)
     threading.Thread(target=srv.serve_forever, daemon=True, name="HTTPServer").start()
 
     url = f"http://127.0.0.1:{runtime.port}"

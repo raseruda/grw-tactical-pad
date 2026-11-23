@@ -433,3 +433,151 @@ input[type="range"] { width: 100%; accent-color: var(--cyan); cursor: pointer; }
 .field-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #16202e; }
 .progress-track { height: 8px; background: #0a1018; border-radius: 4px; overflow: hidden; margin-top: 10px; }
 .progress-fill { height: 100%; background: var(--cyan); transition: width 0.2s; }
+
+/* v1.1.0 Additions: Official Icons, Faction Matrix, Compatibility & Province Detail */
+.cat-icon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  border-radius: 3px;
+  background: rgba(8, 13, 20, 0.9);
+  padding: 1px;
+  flex-shrink: 0;
+}
+
+.noise-mode-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 0 4px 18px;
+}
+.noise-mode-seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.faction-box {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.faction-matrix {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11.5px;
+}
+.faction-head, .faction-row {
+  display: grid;
+  grid-template-columns: 1fr 38px 38px 38px;
+  align-items: center;
+  gap: 4px;
+}
+.faction-head {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+.faction-head span:first-child { text-align: left; }
+.faction-row input[type="checkbox"] { justify-self: center; cursor: pointer; accent-color: var(--cyan); }
+.faction-name { display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.swatch { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; border: 1px solid rgba(0, 0, 0, 0.55); }
+.swatch-ghost { background: #3b82f6; }
+.swatch-santa_blanca { background: #d4a017; }
+.swatch-unidad { background: #9333ea; }
+.swatch-rebel { background: #22c55e; }
+.swatch-civilian { background: #f8fafc; }
+
+.alert-legend {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.legend-ring {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  border: 2px solid #f97316;
+  flex-shrink: 0;
+}
+.legend-ring.hos { border-color: #ef4444; }
+
+.sync-pill {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.14);
+  border: 1px solid rgba(34, 197, 94, 0.45);
+  color: #86efac;
+  white-space: nowrap;
+}
+.badge-auto {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(34, 197, 94, 0.18);
+  border: 1px solid rgba(34, 197, 94, 0.45);
+  color: #86efac;
+  font-weight: 700;
+}
+
+.compat-section {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.compat-slot-group { margin-bottom: 9px; }
+.compat-slot-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--cyan);
+  margin-bottom: 4px;
+}
+.compat-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.compat-chip {
+  font-size: 11px;
+  padding: 3px 7px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.compat-chip:hover { border-color: var(--cyan); }
+.compat-chip.unlocked {
+  border-color: rgba(34, 197, 94, 0.55);
+  background: rgba(34, 197, 94, 0.14);
+  color: #dcfce7;
+}
+
+.cartel-body { flex: 1; display: flex; overflow: hidden; }
+.prov-card { cursor: pointer; transition: 0.12s; }
+.prov-card:hover, .prov-card.selected { border-color: var(--cyan); background: var(--panel-2); }
+.prov-progress-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+.prov-progress-bar { flex: 1; height: 5px; background: #0a1018; border-radius: 3px; overflow: hidden; }
+.prov-progress-fill { height: 100%; background: var(--green); transition: width 0.2s; }
+
+.prov-tasks-group { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.prov-tasks-title { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--cyan); margin-bottom: 6px; }
+.prov-task-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: rgba(15, 23, 36, 0.72);
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+.prov-task-row.done { opacity: 0.78; border-left: 2px solid var(--green); }
+.prov-task-row.pending { border-left: 2px solid rgba(250, 204, 21, 0.55); }

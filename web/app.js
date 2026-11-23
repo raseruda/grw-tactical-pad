@@ -9,13 +9,47 @@
     mapData: null,
     catalog: null,
     cartel: null,
-    progress: { collected_items: [], completed_pois: [], discovered_provinces: [], defeated_bosses: [] },
+    progress: {
+      collected_items: [],
+      completed_pois: [],
+      discovered_provinces: [],
+      defeated_bosses: [],
+      completed_missions: [],
+      auto_collected_items: [],
+      auto_completed_pois: [],
+      auto_completed_missions: [],
+      auto_defeated_bosses: [],
+      auto_sync_info: {},
+    },
     live: null,
     markers: [],
     demoOn: false,
     lastRiskBeepAt: 0,
     audioCtx: null,
+    selectedWikiId: null,
+    lastProgressVersion: 0,
+    refreshingProgress: false,
+    reloadingLang: false,
   };
+
+  // Evita duas guias abertas apontando para o mesmo mod
+  const tabBornAt = performance.now();
+  let singletonChan = null;
+  try {
+    if (typeof BroadcastChannel !== "undefined") {
+      singletonChan = new BroadcastChannel("ghost_tactical_pad_singleton");
+      singletonChan.onmessage = (ev) => {
+        const msg = ev.data;
+        if (msg === "ping") {
+          singletonChan.postMessage("focus_existing");
+          try { window.focus(); } catch {}
+        } else if (msg === "focus_existing" && (performance.now() - tabBornAt) < 2500) {
+          try { window.close(); } catch {}
+        }
+      };
+      singletonChan.postMessage("ping");
+    }
+  } catch {}
 
   let mapCtrl = null;
   let saveTimer = null;
@@ -38,15 +72,21 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ui_prefs: STATE.prefs }),
         }).catch(() => {});
-      }, 280);
+      }, 150);
     }
   }
 
-  window.addEventListener("pagehide", () => {
+  function flushPrefsBeacon() {
     try {
       const blob = new Blob([JSON.stringify({ ui_prefs: STATE.prefs })], { type: "application/json" });
       navigator.sendBeacon("/api/settings", blob);
     } catch {}
+  }
+
+  window.addEventListener("pagehide", flushPrefsBeacon);
+  window.addEventListener("beforeunload", flushPrefsBeacon);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushPrefsBeacon();
   });
 
   function playRiskBeep(isCritical) {
@@ -88,11 +128,41 @@
 
     document.querySelectorAll("#map-style-seg .mode-btn").forEach((b) => b.classList.toggle("active", b.dataset.style === (p.mapStyle || "satellite")));
 
+    const noiseMode = p.weaponNoiseRingMode || "always";
+    document.querySelectorAll("#noise-mode-seg .mode-btn").forEach((b) => {
+      b.classList.toggle("active", b.dataset.noiseMode === noiseMode);
+    });
+
     // Checkboxes vinculados via data-pref
     document.querySelectorAll("input[type=checkbox][data-pref]").forEach((chk) => {
       const k = chk.dataset.pref;
       if (k in p) chk.checked = Boolean(p[k]);
     });
+
+    const ghostMapChk = $("chk-faction-map-ghost");
+    if (ghostMapChk) {
+      ghostMapChk.checked = p.showAlliesSolo !== false || p.showAlliesCoop !== false;
+    }
+
+    const visFacSet = new Set(Array.isArray(p.visionFactions) ? p.visionFactions : ["santa_blanca", "unidad"]);
+    document.querySelectorAll("input[type=checkbox][data-faction-vision]").forEach((chk) => {
+      chk.checked = visFacSet.has(chk.dataset.factionVision);
+    });
+    const sndFacSet = new Set(Array.isArray(p.soundFactions) ? p.soundFactions : ["santa_blanca", "unidad"]);
+    document.querySelectorAll("input[type=checkbox][data-faction-sound]").forEach((chk) => {
+      chk.checked = sndFacSet.has(chk.dataset.factionSound);
+    });
+
+    // Wiki & Cartel persisted filters
+    const wCat = p.wikiCat || "all";
+    document.querySelectorAll("#wiki-cats .pill").forEach((b) => b.classList.toggle("active", b.dataset.wcat === wCat));
+    if ($("wiki-class-filter")) $("wiki-class-filter").value = p.wikiClassFilter || "all";
+    if ($("chk-wiki-missing")) $("chk-wiki-missing").checked = Boolean(p.wikiMissingOnly);
+    const cWing = p.cartelWingFilter || "all";
+    document.querySelectorAll("#cartel-wings .pill").forEach((b) => b.classList.toggle("active", b.dataset.wing === cWing));
+    if ($("map-nearby")) {
+      $("map-nearby").classList.toggle("hidden", !p.nearbyOpen);
+    }
 
     // Selects & sliders
     $("sel-weapon-override").value = p.weaponOverrideClass || "auto";
@@ -137,7 +207,45 @@
       b.addEventListener("click", () => {
         STATE.prefs.mapStyle = b.dataset.style;
         applyPrefsToControls();
-        scheduleSavePrefs();
+        scheduleSavePrefs(true);
+      });
+    });
+
+    document.querySelectorAll("#noise-mode-seg .mode-btn").forEach((b) => {
+      b.addEventListener("click", () => {
+        STATE.prefs.weaponNoiseRingMode = b.dataset.noiseMode;
+        applyPrefsToControls();
+        scheduleSavePrefs(true);
+      });
+    });
+
+    const ghostMapChk = $("chk-faction-map-ghost");
+    if (ghostMapChk) {
+      ghostMapChk.addEventListener("change", () => {
+        STATE.prefs.showAlliesSolo = ghostMapChk.checked;
+        STATE.prefs.showAlliesCoop = ghostMapChk.checked;
+        applyPrefsToControls();
+        scheduleSavePrefs(true);
+      });
+    }
+
+    document.querySelectorAll("input[type=checkbox][data-faction-vision]").forEach((chk) => {
+      chk.addEventListener("change", () => {
+        STATE.prefs.visionFactions = Array.from(
+          document.querySelectorAll("input[type=checkbox][data-faction-vision]:checked")
+        ).map((el) => el.dataset.factionVision);
+        applyPrefsToControls();
+        scheduleSavePrefs(true);
+      });
+    });
+
+    document.querySelectorAll("input[type=checkbox][data-faction-sound]").forEach((chk) => {
+      chk.addEventListener("change", () => {
+        STATE.prefs.soundFactions = Array.from(
+          document.querySelectorAll("input[type=checkbox][data-faction-sound]:checked")
+        ).map((el) => el.dataset.factionSound);
+        applyPrefsToControls();
+        scheduleSavePrefs(true);
       });
     });
 
@@ -189,6 +297,7 @@
         showEnemyVisionCones: true,
         showEnemyHearingRings: false,
         showWeaponNoiseRing: true,
+        weaponNoiseRingMode: "always",
         showSafeToFireHud: true,
         showPlayerAimWarning: true,
         showAlliesSolo: true,
@@ -198,6 +307,12 @@
         showKillWitnessLines: true,
         showDrone: true,
         useTerrainLos: true,
+        showFactionSantaBlanca: true,
+        showFactionUnidad: true,
+        showFactionRebel: true,
+        showFactionCivilian: true,
+        visionFactions: ["santa_blanca", "unidad"],
+        soundFactions: ["santa_blanca", "unidad"],
         enemyVisionRangeM: 55,
         enemyFovDeg: 110,
         bulletImpactNoiseM: 12,
@@ -228,20 +343,22 @@
       STATE.prefs.enabledCats = null;
       renderCategoryList();
       applyPrefsToControls();
-      scheduleSavePrefs();
+      scheduleSavePrefs(true);
     });
     $("btn-cat-none").addEventListener("click", () => {
       STATE.prefs.enabledCats = [];
       renderCategoryList();
       applyPrefsToControls();
-      scheduleSavePrefs();
+      scheduleSavePrefs(true);
     });
 
     $("map-search").addEventListener("input", renderMapSearch);
     $("btn-new-marker").addEventListener("click", () => openMarkerEditor(mapCtrl.camU, mapCtrl.camV));
     $("btn-nearby").addEventListener("click", () => {
-      $("map-nearby").classList.toggle("hidden");
-      renderNearbyDrawer();
+      STATE.prefs.nearbyOpen = !STATE.prefs.nearbyOpen;
+      applyPrefsToControls();
+      if (STATE.prefs.nearbyOpen) renderNearbyDrawer();
+      scheduleSavePrefs(true);
     });
     $("btn-sim-demo").addEventListener("click", toggleDemoSimulation);
 
@@ -252,18 +369,18 @@
         b.classList.add("active");
         STATE.prefs.wikiCat = b.dataset.wcat;
         renderWikiGrid();
-        scheduleSavePrefs();
+        scheduleSavePrefs(true);
       });
     });
     $("wiki-class-filter").addEventListener("change", (e) => {
       STATE.prefs.wikiClassFilter = e.target.value;
       renderWikiGrid();
-      scheduleSavePrefs();
+      scheduleSavePrefs(true);
     });
     $("chk-wiki-missing").addEventListener("change", (e) => {
       STATE.prefs.wikiMissingOnly = e.target.checked;
       renderWikiGrid();
-      scheduleSavePrefs();
+      scheduleSavePrefs(true);
     });
     $("wiki-search").addEventListener("input", renderWikiGrid);
 
@@ -274,7 +391,7 @@
         b.classList.add("active");
         STATE.prefs.cartelWingFilter = b.dataset.wing;
         renderCartelGrid();
-        scheduleSavePrefs();
+        scheduleSavePrefs(true);
       });
     });
 
@@ -288,7 +405,9 @@
         body: JSON.stringify({ lang: e.target.value }),
       });
       const res = await resp.json();
-      GhostI18n.setLang(res.lang);
+      STATE.lang = res.lang || STATE.lang;
+      STATE.langSetting = res.lang_setting || e.target.value;
+      GhostI18n.setLang(STATE.lang);
       await loadStaticCaches();
       renderAll();
     });
@@ -337,14 +456,68 @@
       ],
       enemies: [
         { id: "sb_1", faction: "santa_blanca", x: 420.0, y: -2440.0, z: 120.0, u: 0.5200, v: 0.6162, head: [420.0, -2440.0, 121.6], look_dir: [0.0, -1.0, 0.0], yaw: 180.0, alert: "unaware", alive: true },
-        { id: "sb_2", faction: "santa_blanca", x: 446.0, y: -2440.0, z: 120.0, u: 0.5212, v: 0.6162, head: [446.0, -2440.0, 121.6], look_dir: [-1.0, 0.0, 0.0], yaw: 270.0, alert: "unaware", alive: true },
+        { id: "sb_2", faction: "santa_blanca", x: 446.0, y: -2440.0, z: 120.0, u: 0.5212, v: 0.6162, head: [446.0, -2440.0, 121.6], look_dir: [-1.0, 0.0, 0.0], yaw: 270.0, alert: "hostile", alive: true },
         { id: "sb_3", faction: "unidad", x: 420.0, y: -2492.0, z: 120.0, u: 0.5200, v: 0.6187, head: [420.0, -2492.0, 121.6], look_dir: [0.7, 0.7, 0.0], yaw: 45.0, alert: "suspected", alive: true },
         { id: "sb_4", faction: "santa_blanca", x: 375.0, y: -2445.0, z: 120.0, u: 0.5179, v: 0.6164, head: [375.0, -2445.0, 121.6], look_dir: [0.0, -1.0, 0.0], yaw: 180.0, alert: "unaware", alive: true },
+      ],
+      rebels: [
+        { id: "reb_1", faction: "rebel", x: 392.0, y: -2518.0, z: 120.0, u: 0.5187, v: 0.6199, head: [392.0, -2518.0, 121.6], look_dir: [0.0, 1.0, 0.0], yaw: 15.0, alert: "unaware", alive: true },
+        { id: "reb_2", faction: "rebel", x: 465.0, y: -2470.0, z: 120.0, u: 0.5221, v: 0.6176, head: [465.0, -2470.0, 121.6], look_dir: [-0.8, 0.6, 0.0], yaw: 310.0, alert: "hostile", alive: true },
+      ],
+      civilians: [
+        { id: "civ_1", faction: "civilian", x: 408.0, y: -2540.0, z: 120.0, u: 0.5194, v: 0.6209, head: [408.0, -2540.0, 121.6], look_dir: [1.0, 0.0, 0.0], yaw: 90.0, alert: "unaware", alive: true },
+        { id: "civ_2", faction: "civilian", x: 438.0, y: -2535.0, z: 120.0, u: 0.5209, v: 0.6207, head: [438.0, -2535.0, 121.6], look_dir: [0.0, 1.0, 0.0], yaw: 0.0, alert: "suspected", alive: true },
       ],
       trail: [{ u: 0.5192, v: 0.622 }, { u: 0.5196, v: 0.621 }, { u: 0.5200, v: 0.620 }],
     };
     await fetch("/api/debug/simulate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(demo) });
     mapCtrl && mapCtrl.focusUV(0.52, 0.618, 1.45);
+  }
+
+  function findCatalogItem(id) {
+    if (!STATE.catalog || !id) return null;
+    for (const grp of [STATE.catalog.weapons || [], STATE.catalog.attachments || [], STATE.catalog.medals || []]) {
+      const hit = grp.find((x) => x.id === id);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function updateSyncPills() {
+    const info = (STATE.progress && STATE.progress.auto_sync_info) || {};
+    let modeKey = "sync.manual";
+    if (info.save_write_seq || info.save_read_seq) modeKey = "sync.saveLive";
+    else if (info.save_files && info.save_files.length) modeKey = "sync.fileSync";
+    else if (info.source && String(info.source).includes("proximity")) modeKey = "sync.proximity";
+    const text = `✔ ${GhostI18n.t("sync.active")} · ${GhostI18n.t(modeKey)}`;
+    for (const id of ["wiki-sync-pill", "cartel-sync-pill"]) {
+      const el = $(id);
+      if (el) el.textContent = text;
+    }
+  }
+
+  async function refreshProgressFromServer() {
+    if (STATE.refreshingProgress) return;
+    STATE.refreshingProgress = true;
+    try {
+      const r = await fetch("/api/progress");
+      if (!r.ok) return;
+      STATE.progress = await r.json();
+      mapCtrl && mapCtrl.setProgress(STATE.progress);
+      updateSyncPills();
+      renderWikiGrid();
+      renderCartelGrid();
+      if (STATE.selectedWikiId) {
+        const curIt = findCatalogItem(STATE.selectedWikiId);
+        if (curIt) showWikiDetail(curIt);
+      }
+      if (STATE.prefs.selectedProvince && STATE.cartel) {
+        const curProv = (STATE.cartel.provinces || []).find((p) => p.id === STATE.prefs.selectedProvince);
+        if (curProv) showProvinceDetail(curProv);
+      }
+    } catch {} finally {
+      STATE.refreshingProgress = false;
+    }
   }
 
   function updateHudAndAlerts(live) {
@@ -353,6 +526,21 @@
     const mode = live.status === "demo" ? "demo" : (live.mode || "offline");
     pill.className = `conn-pill ${mode}`;
     pill.textContent = GhostI18n.t(`conn.${mode}`);
+
+    // Acompanha automaticamente o idioma do jogo e progresso em tempo real
+    if (STATE.langSetting === "auto" && live.lang && live.lang !== STATE.lang && !STATE.reloadingLang) {
+      STATE.reloadingLang = true;
+      STATE.lang = live.lang;
+      GhostI18n.setLang(live.lang);
+      loadStaticCaches()
+        .then(() => renderAll())
+        .catch(() => {})
+        .finally(() => { STATE.reloadingLang = false; });
+    }
+    if (live.progress_version && live.progress_version !== STATE.lastProgressVersion) {
+      STATE.lastProgressVersion = live.progress_version;
+      refreshProgressFromServer();
+    }
 
     const tac = live.tactical || {};
     const sf = tac.safe_fire || {};
@@ -379,7 +567,10 @@
     const wCls = (sf.weapon_class || (live.player && live.player.weapon_class) || "ar").toUpperCase();
     const supLabel = sf.suppressed === false ? "UNSUPP" : "SUPP";
     $("hud-weapon").textContent = `🔫 ${wCls} · ${supLabel} · ${sf.hear_radius_m || 34}m`;
-    $("hud-squad").textContent = `👥 ${(tac.visible_allies || []).length} · 🎯 ${(live.enemies || []).length}`;
+    const npcCount = Array.isArray(live.npcs)
+      ? live.npcs.filter((n) => n.faction !== "ghost").length
+      : (live.enemies || []).length + (live.rebels || []).length + (live.civilians || []).length;
+    $("hud-squad").textContent = `👥 ${(tac.visible_allies || []).length} · 🎯 ${npcCount}`;
     if (live.player) {
       $("hud-coords").textContent = `X:${live.player.x.toFixed(0)} Y:${live.player.y.toFixed(0)} Z:${live.player.z.toFixed(0)}`;
     } else {
@@ -444,7 +635,7 @@
         <label class="cat-item">
           <span class="cat-left">
             <input type="checkbox" class="chk-cat" data-cat="${c.id}" ${checked ? "checked" : ""} />
-            <span class="cat-dot" style="background:${c.color}"></span>
+            <img class="cat-icon" src="/api/icon/${c.id}.png?v=2" alt="" onerror="this.style.display='none'" />
             <span>${c.name}</span>
           </span>
           <span class="cat-count">${counts[c.id] || 0}</span>
@@ -460,7 +651,7 @@
         else cur.delete(chk.dataset.cat);
         STATE.prefs.enabledCats = cur.size === allIds.length ? null : Array.from(cur);
         mapCtrl && mapCtrl.setPrefs(STATE.prefs);
-        scheduleSavePrefs();
+        scheduleSavePrefs(true);
       });
     });
   }
@@ -662,8 +853,15 @@
   }
 
   function showWikiDetail(it) {
+    STATE.selectedWikiId = it.id;
+    document.querySelectorAll("#wiki-grid .item-card").forEach((c) => {
+      c.classList.toggle("selected", c.dataset.id === it.id);
+    });
+
     const done = new Set(STATE.progress.collected_items || []);
+    const autoDone = new Set(STATE.progress.auto_collected_items || []);
     const isDone = done.has(it.id);
+    const isAuto = autoDone.has(it.id);
     const panel = $("wiki-detail");
     panel.classList.remove("empty");
 
@@ -685,8 +883,60 @@
          </div>`
       : "";
 
+    let compatHtml = "";
+    if (it.kind === "weapon") {
+      if (it.customizable === false) {
+        compatHtml = `<div class="compat-section muted" style="font-size:12px">${GhostI18n.t("wiki.customizableNo")}</div>`;
+      } else {
+        const groups = Array.isArray(it.compatible_attachments) ? it.compatible_attachments : [];
+        if (groups.length) {
+          compatHtml = `<div class="compat-section">
+            <div class="section-label accent" style="margin-bottom:8px">${GhostI18n.t("wiki.compatAttachments")}</div>
+            ${groups.map((grp) => `
+              <div class="compat-slot-group">
+                <div class="compat-slot-title">${grp.slot_label} (${grp.items.length})</div>
+                <div class="compat-chips">
+                  ${grp.items.map((att) => `
+                    <button type="button" class="compat-chip ${done.has(att.id) ? "unlocked" : ""}" data-wiki-jump="${att.id}" title="${att.province_name} — ${att.location}">
+                      ${done.has(att.id) ? "✔ " : "○ "}${att.name}
+                    </button>
+                  `).join("")}
+                </div>
+              </div>
+            `).join("")}
+          </div>`;
+        } else {
+          compatHtml = `<div class="compat-section muted" style="font-size:12px">${GhostI18n.t("wiki.noCompat")}</div>`;
+        }
+      }
+    } else if (it.kind === "attachment") {
+      const groups = Array.isArray(it.compatible_weapons) ? it.compatible_weapons : [];
+      if (groups.length) {
+        compatHtml = `<div class="compat-section">
+          <div class="section-label accent" style="margin-bottom:8px">${GhostI18n.t("wiki.compatWeapons")}</div>
+          ${groups.map((grp) => `
+            <div class="compat-slot-group">
+              <div class="compat-slot-title">${grp.class_label} (${grp.items.length})</div>
+              <div class="compat-chips">
+                ${grp.items.map((wp) => `
+                  <button type="button" class="compat-chip ${done.has(wp.id) ? "unlocked" : ""}" data-wiki-jump="${wp.id}" title="${wp.province_name} — ${wp.location}">
+                    ${done.has(wp.id) ? "✔ " : "○ "}${wp.name}
+                  </button>
+                `).join("")}
+              </div>
+            </div>
+          `).join("")}
+        </div>`;
+      } else {
+        compatHtml = `<div class="compat-section muted" style="font-size:12px">${GhostI18n.t("wiki.noCompat")}</div>`;
+      }
+    }
+
     panel.innerHTML = `
-      <h2 style="margin:0 0 6px 0">${it.name}</h2>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+        <h2 style="margin:0">${it.name}</h2>
+        ${isAuto ? `<span class="badge-auto">${GhostI18n.t("wiki.unlockedAuto")}</span>` : ""}
+      </div>
       <div class="muted" style="margin-bottom:10px">📍 ${it.province_name} — ${it.location}</div>
       <p>${it.desc || ""}</p>
       ${acousticHtml}
@@ -695,6 +945,7 @@
         <button id="btn-wiki-map" class="btn btn-cyan" style="flex:1">📍 ${GhostI18n.t("showOnMap")}</button>
         <button id="btn-wiki-collect" class="btn ${isDone ? "btn-green" : ""}">${isDone ? "✔ " + GhostI18n.t("collected") : GhostI18n.t("markCollected")}</button>
       </div>
+      ${compatHtml}
     `;
     $("btn-wiki-map").onclick = () => {
       STATE.prefs.activeTab = "map";
@@ -703,7 +954,7 @@
       applyPrefsToControls();
       mapCtrl.highlightedItemId = it.id;
       mapCtrl.focusUV(it.u, it.v, 0.8);
-      scheduleSavePrefs();
+      scheduleSavePrefs(true);
     };
     $("btn-wiki-collect").onclick = async () => {
       const r = await fetch("/api/progress", {
@@ -716,6 +967,173 @@
       showWikiDetail(it);
       renderWikiGrid();
     };
+    panel.querySelectorAll("[data-wiki-jump]").forEach((btn) => {
+      btn.onclick = () => {
+        const target = findCatalogItem(btn.dataset.wikiJump);
+        if (target) showWikiDetail(target);
+      };
+    });
+  }
+
+  function _provinceProgressStats(p) {
+    const tasks = p.tasks || {};
+    const doneItems = new Set(STATE.progress.collected_items || []);
+    const donePois = new Set(STATE.progress.completed_pois || []);
+    const doneMissions = new Set(STATE.progress.completed_missions || []);
+    const autoItems = new Set(STATE.progress.auto_collected_items || []);
+    const autoPois = new Set(STATE.progress.auto_completed_pois || []);
+    const autoMissions = new Set(STATE.progress.auto_completed_missions || []);
+
+    const defs = [
+      ["missions", "cartel.missionsLabel", "mission"],
+      ["weapons", "cartel.weaponsLabel", "item"],
+      ["attachments", "cartel.attachmentsLabel", "item"],
+      ["medals", "cartel.medalsLabel", "item"],
+      ["skill_points", "cartel.skillPointsLabel", "poi"],
+      ["kingslayer", "cartel.kingslayerLabel", "poi"],
+      ["rebel_ops", "cartel.rebelOpsLabel", "poi"],
+      ["rally_points", "cartel.rallyPointsLabel", "poi"],
+      ["bases", "cartel.basesLabel", "poi"],
+    ];
+
+    const completed = [];
+    const remaining = [];
+    for (const [key, labelKey, toggleKind] of defs) {
+      const arr = Array.isArray(tasks[key]) ? tasks[key] : [];
+      for (const entry of arr) {
+        const poiId = entry.poi_id || entry.id;
+        const itemId = entry.item_id || (toggleKind === "item" ? entry.id : null);
+        let isDone = false;
+        let isAuto = false;
+        if (toggleKind === "mission") {
+          isDone = doneMissions.has(entry.id);
+          isAuto = autoMissions.has(entry.id);
+        } else if (toggleKind === "item") {
+          isDone = doneItems.has(itemId) || (poiId && donePois.has(poiId));
+          isAuto = autoItems.has(itemId) || (poiId && autoPois.has(poiId));
+        } else {
+          isDone = donePois.has(poiId) || (itemId && doneItems.has(itemId));
+          isAuto = autoPois.has(poiId) || (itemId && autoItems.has(itemId));
+        }
+        const rec = { ...entry, catKey: key, catLabel: GhostI18n.t(labelKey), toggleKind, poiId, itemId, isDone, isAuto };
+        if (isDone) completed.push(rec);
+        else remaining.push(rec);
+      }
+    }
+    const total = completed.length + remaining.length;
+    const pct = total > 0 ? Math.round((completed.length * 100) / total) : 0;
+    return { completed, remaining, total, pct };
+  }
+
+  function showProvinceDetail(p) {
+    if (!p) return;
+    STATE.prefs.selectedProvince = p.id;
+    document.querySelectorAll("#cartel-grid .prov-card").forEach((c) => {
+      c.classList.toggle("selected", c.dataset.id === p.id);
+    });
+
+    const panel = $("cartel-detail");
+    if (!panel) return;
+    panel.classList.remove("empty");
+
+    const bossesDone = new Set(STATE.progress.defeated_bosses || []);
+    const autoBosses = new Set(STATE.progress.auto_defeated_bosses || []);
+    const isDef = bossesDone.has(p.id);
+    const isBossAuto = autoBosses.has(p.id);
+    const st = _provinceProgressStats(p);
+
+    const renderGroup = (list, isDoneSection) => {
+      if (!list.length) return `<div class="muted" style="font-size:12px">—</div>`;
+      return list.map((t) => `
+        <div class="prov-task-row ${isDoneSection ? "done" : "pending"}">
+          <div style="min-width:0;flex:1">
+            <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+              ${isDoneSection ? "✔ " : "○ "}${t.name}
+            </div>
+            <div class="muted" style="font-size:10.5px">${t.catLabel}${t.location ? ` · ${t.location}` : ""}</div>
+          </div>
+          ${t.isAuto ? `<span class="badge-auto">${GhostI18n.t("cartel.autoLabel")}</span>` : ""}
+          ${typeof t.u === "number" ? `<button class="icon-btn btn-task-map" data-u="${t.u}" data-v="${t.v}" data-tid="${t.item_id || t.poiId || t.id}" title="${GhostI18n.t("showOnMap")}">📍</button>` : ""}
+          <button class="icon-btn btn-task-toggle" data-kind="${t.toggleKind}" data-id="${t.id}" data-item="${t.itemId || ""}" data-poi="${t.poiId || ""}" title="${isDoneSection ? GhostI18n.t("collected") : GhostI18n.t("markCollected")}">${isDoneSection ? "✔" : "○"}</button>
+        </div>
+      `).join("");
+    };
+
+    panel.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <h2 style="margin:0">${p.name}</h2>
+        ${isBossAuto ? `<span class="badge-auto">${GhostI18n.t("cartel.autoLabel")}</span>` : ""}
+      </div>
+      <div class="muted" style="margin:4px 0 8px 0">Buchón: <strong>${p.boss}</strong> · ${p.biome}</div>
+      <div class="prov-progress-row" style="margin-bottom:8px">
+        <div class="prov-progress-bar"><div class="prov-progress-fill" style="width:${st.pct}%"></div></div>
+        <span class="mono">${st.completed.length}/${st.total} (${st.pct}%)</span>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button id="btn-detail-prov-map" class="btn btn-cyan" style="flex:1">📍 ${GhostI18n.t("showOnMap")}</button>
+        <button id="btn-detail-prov-boss" class="btn ${isDef ? "btn-green" : ""}">${isDef ? "✔ " : ""}${GhostI18n.t("bossDefeated")}</button>
+      </div>
+      <div class="prov-tasks-group">
+        <div class="prov-tasks-title" style="color:var(--green)">✔ ${GhostI18n.t("cartel.completedSection")} (${st.completed.length})</div>
+        ${renderGroup(st.completed, true)}
+      </div>
+      <div class="prov-tasks-group">
+        <div class="prov-tasks-title" style="color:#facc15">○ ${GhostI18n.t("cartel.remainingSection")} (${st.remaining.length})</div>
+        ${renderGroup(st.remaining, false)}
+      </div>
+    `;
+
+    $("btn-detail-prov-map").onclick = () => {
+      STATE.prefs.activeTab = "map";
+      STATE.prefs.followPlayer = false;
+      applyPrefsToControls();
+      mapCtrl.focusUV(p.u, p.v, 0.25);
+      scheduleSavePrefs(true);
+    };
+    $("btn-detail-prov-boss").onclick = async () => {
+      const r = await fetch("/api/progress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toggle_boss: p.id }),
+      });
+      STATE.progress = await r.json();
+      renderCartelGrid();
+      showProvinceDetail(p);
+    };
+    panel.querySelectorAll(".btn-task-map").forEach((b) => {
+      b.onclick = () => {
+        STATE.prefs.activeTab = "map";
+        STATE.prefs.followPlayer = false;
+        STATE.prefs.mapMode = "full";
+        applyPrefsToControls();
+        mapCtrl.highlightedItemId = b.dataset.tid || null;
+        mapCtrl.focusUV(Number(b.dataset.u), Number(b.dataset.v), 0.8);
+        scheduleSavePrefs(true);
+      };
+    });
+    panel.querySelectorAll(".btn-task-toggle").forEach((b) => {
+      b.onclick = async () => {
+        const body = {};
+        if (b.dataset.kind === "mission") {
+          body.toggle_mission = b.dataset.id;
+        } else if (b.dataset.kind === "item") {
+          body.toggle_item = b.dataset.item || b.dataset.id;
+          if (b.dataset.poi) body.toggle_poi = b.dataset.poi;
+        } else {
+          body.toggle_poi = b.dataset.poi || b.dataset.id;
+          if (b.dataset.item) body.toggle_item = b.dataset.item;
+        }
+        const r = await fetch("/api/progress", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        STATE.progress = await r.json();
+        mapCtrl && mapCtrl.setProgress(STATE.progress);
+        renderCartelGrid();
+        showProvinceDetail(p);
+      };
+    });
   }
 
   function renderCartelGrid() {
@@ -729,15 +1147,21 @@
     $("cartel-grid").innerHTML = provs.map((p) => {
       const w = wingsById[p.wing] || {};
       const isDef = bossesDone.has(p.id);
+      const isSel = STATE.prefs.selectedProvince === p.id;
       const skulls = "💀".repeat(p.skulls || 1);
+      const st = _provinceProgressStats(p);
       return `
-        <div class="prov-card ${isDef ? "defeated" : ""}">
+        <div class="prov-card ${isDef ? "defeated" : ""} ${isSel ? "selected" : ""}" data-id="${p.id}">
           <div class="card-title-row">
             <span style="font-size:15px">${p.name}</span>
             <span>${skulls}</span>
           </div>
           <div style="font-size:11.5px;color:${w.color || "#38bdf8"};font-weight:700">${w.name || p.wing} · Buchón: ${p.boss}</div>
           <div class="muted" style="font-size:11.5px">${p.biome} — ${p.desc}</div>
+          <div class="prov-progress-row">
+            <div class="prov-progress-bar"><div class="prov-progress-fill" style="width:${st.pct}%"></div></div>
+            <span class="mono">${st.completed.length}/${st.total}</span>
+          </div>
           <div style="display:flex;gap:8px;margin-top:6px">
             <button class="btn btn-cyan btn-prov-map" data-id="${p.id}" style="flex:1">📍 ${GhostI18n.t("showOnMap")}</button>
             <button class="btn ${isDef ? "btn-green" : ""} btn-prov-boss" data-id="${p.id}">${isDef ? "✔ " + GhostI18n.t("bossDefeated") : GhostI18n.t("bossDefeated")}</button>
@@ -746,19 +1170,31 @@
       `;
     }).join("");
 
+    $("cartel-grid").querySelectorAll(".prov-card").forEach((card) => {
+      card.onclick = () => {
+        const p = STATE.cartel.provinces.find((x) => x.id === card.dataset.id);
+        if (p) {
+          showProvinceDetail(p);
+          scheduleSavePrefs(true);
+        }
+      };
+    });
     $("cartel-grid").querySelectorAll(".btn-prov-map").forEach((b) => {
-      b.onclick = () => {
+      b.onclick = (e) => {
+        e.stopPropagation();
         const p = STATE.cartel.provinces.find((x) => x.id === b.dataset.id);
         if (p) {
           STATE.prefs.activeTab = "map";
           STATE.prefs.followPlayer = false;
           applyPrefsToControls();
           mapCtrl.focusUV(p.u, p.v, 0.25);
+          scheduleSavePrefs(true);
         }
       };
     });
     $("cartel-grid").querySelectorAll(".btn-prov-boss").forEach((b) => {
-      b.onclick = async () => {
+      b.onclick = async (e) => {
+        e.stopPropagation();
         const r = await fetch("/api/progress", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -766,6 +1202,8 @@
         });
         STATE.progress = await r.json();
         renderCartelGrid();
+        const p = STATE.cartel.provinces.find((x) => x.id === b.dataset.id);
+        if (p && STATE.prefs.selectedProvince === p.id) showProvinceDetail(p);
       };
     });
   }
@@ -779,7 +1217,7 @@
       $("row-lan-url").style.display = "flex";
       $("lbl-lan-url").textContent = st.lan_url;
     }
-    const opts = [`<option value="auto">Auto</option>`];
+    const opts = [`<option value="auto">${GhostI18n.t("settings.langAuto")}</option>`];
     for (const l of (st.supported_languages || [])) {
       opts.push(`<option value="${l.code}">${l.label}</option>`);
     }
@@ -825,7 +1263,29 @@
     renderCategoryList();
     renderWikiGrid();
     renderCartelGrid();
+    updateSyncPills();
+    if (STATE.selectedWikiId) {
+      const curIt = findCatalogItem(STATE.selectedWikiId);
+      if (curIt) showWikiDetail(curIt);
+    }
+    if (STATE.prefs.selectedProvince && STATE.cartel) {
+      const curProv = (STATE.cartel.provinces || []).find((p) => p.id === STATE.prefs.selectedProvince);
+      if (curProv) showProvinceDetail(curProv);
+    }
     applyPrefsToControls();
+  }
+
+  function connectStream() {
+    const es = new EventSource("/api/stream");
+    es.onmessage = (ev) => {
+      try {
+        updateHudAndAlerts(JSON.parse(ev.data));
+      } catch {}
+    };
+    es.onerror = () => {
+      try { es.close(); } catch {}
+      setTimeout(connectStream, 2000);
+    };
   }
 
   async function init() {
@@ -865,17 +1325,12 @@
     renderAll();
 
     if (typeof STATE.prefs.camU === "number" && typeof STATE.prefs.camV === "number") {
-      mapCtrl.focusUV(STATE.prefs.camU, STATE.prefs.camV, STATE.prefs.zoom || 0.035);
+      mapCtrl.setViewExact(STATE.prefs.camU, STATE.prefs.camV, STATE.prefs.zoom || 0.035);
     } else {
-      mapCtrl.focusUV(0.5, 0.5, 0.032);
+      mapCtrl.setViewExact(0.5, 0.5, 0.032);
     }
 
-    const es = new EventSource("/api/stream");
-    es.onmessage = (ev) => {
-      try {
-        updateHudAndAlerts(JSON.parse(ev.data));
-      } catch {}
-    };
+    connectStream();
   }
 
   init();

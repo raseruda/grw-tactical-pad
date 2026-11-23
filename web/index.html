@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ghost Tactical Pad — Ghost Recon Wildlands</title>
-  <link rel="stylesheet" href="/style.css?v=1" />
+  <link rel="stylesheet" href="/style.css?v=2" />
 </head>
 <body>
   <!-- Overlay de preparação de cache inicial -->
@@ -96,6 +96,13 @@
             <label class="mini-check"><input type="checkbox" data-pref="showEnemyVisionCones" checked /> <span data-i18n="tactical.showEnemyVisionCones">Campo de visão (Cones FOV)</span></label>
             <label class="mini-check"><input type="checkbox" data-pref="showEnemyHearingRings" /> <span data-i18n="tactical.showEnemyHearingRings">Círculos de audição inimigos</span></label>
             <label class="mini-check"><input type="checkbox" data-pref="showWeaponNoiseRing" checked /> <span data-i18n="tactical.showWeaponNoiseRing">Raio sonoro da arma equipada</span></label>
+            <div class="noise-mode-row">
+              <span class="muted" style="font-size:11px" data-i18n="tactical.noiseModeLabel">Visibilidade do som da arma</span>
+              <div class="mode-segmented noise-mode-seg" id="noise-mode-seg">
+                <button type="button" class="mode-btn active" data-noise-mode="always" data-i18n="tactical.noiseAlways">Sempre visível</button>
+                <button type="button" class="mode-btn" data-noise-mode="aiming" data-i18n="tactical.noiseAiming">Só ao mirar</button>
+              </div>
+            </div>
             <label class="mini-check"><input type="checkbox" data-pref="showSafeToFireHud" checked /> <span data-i18n="tactical.showSafeToFireHud">Indicador "Seguro Atirar" no HUD</span></label>
             <label class="mini-check"><input type="checkbox" data-pref="showPlayerAimWarning" checked /> <span data-i18n="tactical.showPlayerAimWarning">Alerta ao mirar (Som / Testemunha)</span></label>
             <label class="mini-check"><input type="checkbox" data-pref="showAlliesSolo" checked /> <span data-i18n="tactical.showAlliesSolo">Aliados Solo (IA do Esquadrão)</span></label>
@@ -106,6 +113,52 @@
             <label class="mini-check"><input type="checkbox" data-pref="showDrone" checked /> <span data-i18n="tactical.showDrone">Posição do Drone</span></label>
             <label class="mini-check"><input type="checkbox" data-pref="useTerrainLos" checked /> <span data-i18n="tactical.useTerrainLos">Checar oclusão 3D / terreno</span></label>
             <label class="mini-check"><input type="checkbox" data-pref="alertSound" /> <span data-i18n="tactical.alertSound">Bipe sonoro em alerta de risco</span></label>
+          </div>
+
+          <div class="faction-box">
+            <div class="section-label" style="margin-bottom:5px" data-i18n="tactical.factionMatrixTitle">Facções &amp; Grupos (Mapa · Visão · Som)</div>
+            <div id="faction-matrix" class="faction-matrix">
+              <div class="faction-head">
+                <span data-i18n="tactical.colFaction">Grupo</span>
+                <span data-i18n="tactical.colMap">Mapa</span>
+                <span data-i18n="tactical.colVision">Visão</span>
+                <span data-i18n="tactical.colSound">Som</span>
+              </div>
+              <div class="faction-row">
+                <span class="faction-name"><i class="swatch swatch-ghost"></i><span data-i18n="faction.ghost">Ghosts / Co-op</span></span>
+                <input type="checkbox" id="chk-faction-map-ghost" checked title="Mapa" />
+                <input type="checkbox" data-faction-vision="ghost" title="Visão FOV" />
+                <input type="checkbox" data-faction-sound="ghost" title="Som" />
+              </div>
+              <div class="faction-row">
+                <span class="faction-name"><i class="swatch swatch-santa_blanca"></i><span data-i18n="faction.santa_blanca">Santa Blanca</span></span>
+                <input type="checkbox" data-pref="showFactionSantaBlanca" checked title="Mapa" />
+                <input type="checkbox" data-faction-vision="santa_blanca" checked title="Visão FOV" />
+                <input type="checkbox" data-faction-sound="santa_blanca" checked title="Som" />
+              </div>
+              <div class="faction-row">
+                <span class="faction-name"><i class="swatch swatch-unidad"></i><span data-i18n="faction.unidad">La Unidad</span></span>
+                <input type="checkbox" data-pref="showFactionUnidad" checked title="Mapa" />
+                <input type="checkbox" data-faction-vision="unidad" checked title="Visão FOV" />
+                <input type="checkbox" data-faction-sound="unidad" checked title="Som" />
+              </div>
+              <div class="faction-row">
+                <span class="faction-name"><i class="swatch swatch-rebel"></i><span data-i18n="faction.rebel">Rebeldes</span></span>
+                <input type="checkbox" data-pref="showFactionRebel" checked title="Mapa" />
+                <input type="checkbox" data-faction-vision="rebel" title="Visão FOV" />
+                <input type="checkbox" data-faction-sound="rebel" title="Som" />
+              </div>
+              <div class="faction-row">
+                <span class="faction-name"><i class="swatch swatch-civilian"></i><span data-i18n="faction.civilian">Civis</span></span>
+                <input type="checkbox" data-pref="showFactionCivilian" checked title="Mapa" />
+                <input type="checkbox" data-faction-vision="civilian" title="Visão FOV" />
+                <input type="checkbox" data-faction-sound="civilian" title="Som" />
+              </div>
+            </div>
+            <div class="alert-legend">
+              <span class="legend-ring sus"></span><span class="legend-ring hos"></span>
+              <span data-i18n="tactical.alertLegend">Contorno Laranja: Desconfiado · Vermelho: Hostil</span>
+            </div>
           </div>
 
           <div class="tuning-grid">
@@ -222,6 +275,7 @@
         </select>
         <label class="mini-check"><input type="checkbox" id="chk-wiki-missing" /> <span data-i18n="wiki.missingOnly">Apenas faltantes</span></label>
         <input type="search" id="wiki-search" class="search-input compact" data-i18n-placeholder="wiki.searchPlaceholder" placeholder="Buscar arma, acessório, província ou base..." />
+        <div id="wiki-sync-pill" class="sync-pill" data-i18n="sync.active">Sync Automático</div>
       </div>
       <div class="wiki-body">
         <div id="wiki-grid" class="wiki-grid"></div>
@@ -241,9 +295,15 @@
           <button class="pill" data-wing="production" data-i18n="cartel.production">Produção · El Yayo</button>
           <button class="pill" data-wing="influence" data-i18n="cartel.influence">Influência · El Cardenal</button>
         </div>
-        <div id="cartel-summary" class="muted" style="margin-left:auto"></div>
+        <div id="cartel-sync-pill" class="sync-pill" style="margin-left:auto" data-i18n="sync.active">Sync Automático</div>
+        <div id="cartel-summary" class="muted"></div>
       </div>
-      <div id="cartel-grid" class="cartel-grid"></div>
+      <div class="cartel-body">
+        <div id="cartel-grid" class="cartel-grid"></div>
+        <aside id="cartel-detail" class="detail-panel empty">
+          <div class="empty-hint" data-i18n="cartel.emptyHint">Selecione uma província ao lado para ver tudo o que já foi concluído e o que falta fazer.</div>
+        </aside>
+      </div>
     </section>
   </main>
 
@@ -278,8 +338,8 @@
     </div>
   </div>
 
-  <script src="/i18n.js?v=1"></script>
-  <script src="/map.js?v=1"></script>
-  <script src="/app.js?v=1"></script>
+  <script src="/i18n.js?v=2"></script>
+  <script src="/map.js?v=2"></script>
+  <script src="/app.js?v=2"></script>
 </body>
 </html>

@@ -1,20 +1,47 @@
-"""Leitor de telemetria ao vivo da memória de GRW.exe (in-process via winmm.dll) e classificador de entidades."""
+"""Leitor de telemetria ao vivo da memória de GRW.exe (in-process via winmm.dll) e classificador de facções/estados."""
 from __future__ import annotations
 
 import ctypes
 import math
 import os
 import threading
-import time
 from ctypes import wintypes
 from typing import Any
 
 MAX_CHARS = 512
 MAX_WEAPONS = 64
 TELEMETRY_MAGIC = 0x47525754
+TELEMETRY_VERSION = 2
 
 TH32CS_SNAPPROCESS = 0x00000002
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+# Mapeamento exato recuperado de GRW.exe (0x3b88c98..0x3b88cec):
+# 0=Neutral, 1=Civilian, 2=Ghost, 3=MexCartel, 4=MexTraitor, 5=Unidad, 6=Penitentes, 7=Rebel
+EFACTION_MAP: dict[int, str] = {
+    0: "civilian",
+    1: "civilian",
+    2: "ghost",
+    3: "santa_blanca",
+    4: "santa_blanca",
+    5: "unidad",
+    6: "santa_blanca",
+    7: "rebel",
+}
+
+# Mapeamento exato recuperado de GRW.exe (0x13bea785 jump table 0x27d918c):
+# 0=Down, 1=Idle, 2=Stealth, 3=Suspected, 4=Vanish, 5=Vanishing, 6=Fight
+EALERT_MAP: dict[int, str] = {
+    0: "down",
+    1: "unaware",
+    2: "unaware",
+    3: "suspected",
+    4: "suspected",
+    5: "suspected",
+    6: "hostile",
+}
+
+CIVILIAN_NPC_VTABLE_RVAS = frozenset({0x3B81890, 0x3B81D58})
 
 
 class GRWCharSlot(ctypes.Structure):
@@ -26,6 +53,8 @@ class GRWCharSlot(ctypes.Structure):
         ("pose_ptr", ctypes.c_uint64),
         ("entity_vtable", ctypes.c_uint64),
         ("last_seen_ms", ctypes.c_uint64),
+        ("npc_ptr", ctypes.c_uint64),
+        ("npc_vtable", ctypes.c_uint64),
         ("bone_count", ctypes.c_uint32),
         ("rig_map_count", ctypes.c_uint32),
         ("head_idx", ctypes.c_int32),
@@ -34,6 +63,12 @@ class GRWCharSlot(ctypes.Structure):
         ("hips_idx", ctypes.c_int32),
         ("pose_flags", ctypes.c_uint32),
         ("valid_flags", ctypes.c_uint32),
+        ("faction_raw", ctypes.c_int32),
+        ("alert_raw", ctypes.c_int32),
+        ("faction_1e8", ctypes.c_int32),
+        ("alert_328", ctypes.c_int32),
+        ("is_player_comp", ctypes.c_uint32),
+        ("_pad_npc", ctypes.c_uint32),
         ("root_pos", ctypes.c_float * 4),
         ("root_quat", ctypes.c_float * 4),
         ("head_pos", ctypes.c_float * 4),
@@ -53,6 +88,7 @@ class GRWWeaponSlot(ctypes.Structure):
         ("gun_root_owner", ctypes.c_uint64),
         ("muzzle_owner", ctypes.c_uint64),
         ("attachment_holder", ctypes.c_uint64),
+        ("muzzle_stuff", ctypes.c_uint64),
         ("last_seen_ms", ctypes.c_uint64),
         ("weapon_category", ctypes.c_uint32),
         ("shoot_mode", ctypes.c_uint32),
@@ -75,10 +111,15 @@ class GRWTelemetryState(ctypes.Structure):
         ("hooks_mask", ctypes.c_uint32),
         ("build_matched", ctypes.c_uint32),
         ("frame_tick", ctypes.c_uint64),
-        ("hook_calls", ctypes.c_uint64 * 8),
+        ("hook_calls", ctypes.c_uint64 * 16),
         ("local_player_comp", ctypes.c_uint64),
         ("local_player_entity", ctypes.c_uint64),
         ("local_player_skel", ctypes.c_uint64),
+        ("player_entities", ctypes.c_uint64 * 8),
+        ("player_entity_count", ctypes.c_uint32),
+        ("save_read_seq", ctypes.c_uint32),
+        ("save_write_seq", ctypes.c_uint32),
+        ("last_save_slot", ctypes.c_uint32),
         ("cam_ptr", ctypes.c_uint64),
         ("cam_mode", ctypes.c_uint32),
         ("cam_valid", ctypes.c_uint32),
@@ -175,7 +216,7 @@ def _vec_to_yaw_deg(v: tuple[float, float, float]) -> float:
     return math.degrees(math.atan2(v[0], v[1])) % 360.0
 
 
-# Mapeamento provisório de m_eWeaponCategory (+0x17C) para classe acústica (calibrado em Step 4)
+# Mapeamento de m_eWeaponCategory (+0x17C) para classe acústica
 WEAPON_CATEGORY_MAP: dict[int, str] = {
     0: "ar",
     1: "ar",
@@ -188,7 +229,7 @@ WEAPON_CATEGORY_MAP: dict[int, str] = {
 
 
 class GRWLiveReader:
-    """Lê a estrutura compartilhada GRWTelemetryState sem bloqueio e classifica Player/Aliados/Inimigos."""
+    """Lê GRWTelemetryState sem bloqueio e classifica Ghosts/Santa Blanca/Unidad/Rebeldes/Civis + estados."""
 
     def __init__(self, telemetry_ptr: int | None = None, world_bounds: dict[str, Any] | None = None) -> None:
         self.telemetry_ptr = telemetry_ptr
@@ -223,35 +264,40 @@ class GRWLiveReader:
         return max(0.0, min(1.0, u)), max(0.0, min(1.0, v))
 
     def set_simulated_frame(self, frame: dict[str, Any] | None) -> None:
-        """Permite injetar cena sintética em testes unitários sem modificar a lógica do leitor."""
+        """Permite injetar cena sintética em testes unitários ou demo UI."""
         with self._lock:
             self._override_snapshot = frame
 
     def get_debug_probe(self) -> dict[str, Any]:
-        """Retorna dump diagnóstico bruto de câmera, player, esqueletos e armas para calibração."""
+        """Retorna dump diagnóstico bruto de câmera, player, NPCs, facções, estados e armas."""
         st = self._state
         if st is None or st.magic != TELEMETRY_MAGIC:
             return {"status": "no_telemetry_ptr", "pid": find_grw_pid()}
         now_ms = int(_kernel32.GetTickCount64())
+        mod_base = int(st.module_base)
         chars = []
         for i in range(MAX_CHARS):
             c = st.chars[i]
             if c.skel_ptr == 0 or (now_ms - c.last_seen_ms) > 2500:
                 continue
+            vt_rva = (int(c.npc_vtable) - mod_base) if (c.npc_vtable and mod_base and c.npc_vtable > mod_base) else 0
             chars.append({
                 "slot": i,
                 "skel": hex(c.skel_ptr),
                 "entity": hex(c.entity_ptr),
+                "npc": hex(c.npc_ptr),
+                "npc_vt_rva": hex(vt_rva),
                 "rig": hex(c.rig_ptr),
                 "vtable": hex(c.entity_vtable),
                 "bones": int(c.bone_count),
-                "map_cnt": int(c.rig_map_count),
+                "is_player": int(c.is_player_comp),
+                "faction_raw": int(c.faction_raw),
+                "faction_1e8": int(c.faction_1e8),
+                "alert_raw": int(c.alert_raw),
+                "alert_328": int(c.alert_328),
                 "age_ms": now_ms - int(c.last_seen_ms),
                 "root": [round(float(x), 3) for x in c.root_pos[:3]],
                 "head": [round(float(x), 3) for x in c.head_pos[:3]],
-                "head_q": [round(float(x), 4) for x in c.head_quat[:4]],
-                "rhand": [round(float(x), 3) for x in c.rhand_pos[:3]],
-                "ent_u32_hex": [f"{int(x):08x}" for x in c.ent_u32[:16]],
             })
         weapons = []
         for i in range(MAX_WEAPONS):
@@ -265,23 +311,28 @@ class GRWLiveReader:
                 "gun_root_owner": hex(w.gun_root_owner),
                 "muzzle_owner": hex(w.muzzle_owner),
                 "att_holder": hex(w.attachment_holder),
+                "muzzle_stuff": hex(w.muzzle_stuff),
                 "category": int(w.weapon_category),
                 "shoot_mode": int(w.shoot_mode),
                 "max_range": round(float(w.max_range), 2),
                 "muzzle_vel": round(float(w.muzzle_velocity), 2),
-                "extra_u32_hex": [f"{int(x):08x}" for x in w.extra_u32[:12]],
             })
         return {
             "status": "ok",
+            "version": int(st.version),
             "build_matched": bool(st.build_matched),
             "pe_timestamp": hex(st.pe_timestamp),
             "pe_size_of_image": hex(st.pe_size_of_image),
             "module_base": hex(st.module_base),
             "hooks_mask": hex(st.hooks_mask),
             "frame_tick": int(st.frame_tick),
-            "hook_calls": [int(x) for x in st.hook_calls[:5]],
+            "hook_calls": [int(x) for x in st.hook_calls[:8]],
             "local_player_entity": hex(st.local_player_entity),
             "local_player_skel": hex(st.local_player_skel),
+            "player_entities": [hex(st.player_entities[k]) for k in range(min(8, int(st.player_entity_count)))],
+            "save_read_seq": int(st.save_read_seq),
+            "save_write_seq": int(st.save_write_seq),
+            "last_save_slot": int(st.last_save_slot),
             "cam": {
                 "valid": bool(st.cam_valid),
                 "mode": int(st.cam_mode),
@@ -304,20 +355,43 @@ class GRWLiveReader:
         weapon_by_owner: dict[int, GRWWeaponSlot],
         player_vtable: int,
         player_rig: int,
+        module_base: int,
+        coop_entities: set[int],
     ) -> str:
-        """Classifica entidade capturada em SkeletonPostUpdate para Player / Co-op / AI Ally / Inimigo."""
+        """Classifica entidade para Player / Ghost Co-op / Ghost IA / Santa Blanca / La Unidad / Rebelde / Civil."""
         if (local_ent and c.entity_ptr == local_ent) or (local_skel and c.skel_ptr == local_skel):
             return "player"
-        has_weapon = (c.entity_ptr in weapon_by_owner) or (c.skel_ptr in weapon_by_owner)
-        # Rig de jogador (Ghost ~312 bones) que não é o jogador local: aliado Co-op ou Squadmate IA
+        if int(c.is_player_comp) or (c.entity_ptr in coop_entities) or (player_vtable and c.entity_vtable == player_vtable):
+            return "ally_coop"
+
+        fac_enum = EFACTION_MAP.get(int(c.faction_raw)) or EFACTION_MAP.get(int(c.faction_1e8))
         is_ghost_rig = (player_rig and c.rig_ptr == player_rig) or c.bone_count >= 280
-        if is_ghost_rig:
-            if player_vtable and c.entity_vtable == player_vtable:
-                return "ally_coop"
+        if fac_enum == "ghost" or is_ghost_rig:
             return "ally_ai"
+        if fac_enum == "civilian":
+            return "civilian"
+        if fac_enum == "rebel":
+            return "rebel"
+        if fac_enum == "unidad":
+            return "enemy_unidad"
+        if fac_enum == "santa_blanca":
+            return "enemy_sb"
+
+        vt_rva = (int(c.npc_vtable) - module_base) if (c.npc_vtable and module_base and c.npc_vtable > module_base) else 0
+        if vt_rva in CIVILIAN_NPC_VTABLE_RVAS:
+            return "civilian"
+
+        has_weapon = (c.entity_ptr in weapon_by_owner) or (c.skel_ptr in weapon_by_owner)
         if not has_weapon and c.bone_count < 140:
             return "civilian"
         return "enemy_sb"
+
+    @staticmethod
+    def _resolve_alert(c: GRWCharSlot) -> str:
+        for raw in (int(c.alert_raw), int(c.alert_328)):
+            if raw in EALERT_MAP:
+                return EALERT_MAP[raw]
+        return "unaware"
 
     def read_live_frame(self) -> dict[str, Any]:
         """Lê o estado tático atual do jogo (ou status offline se GRW.exe não estiver rodando)."""
@@ -333,16 +407,25 @@ class GRWLiveReader:
                 "status": "waiting_plugin" if pid else "offline",
                 "pid": pid,
                 "hooks_mask": 0,
+                "save_read_seq": 0,
+                "save_write_seq": 0,
+                "last_save_slot": 0,
                 "player": None,
                 "drone": None,
                 "allies": [],
                 "enemies": [],
+                "rebels": [],
+                "civilians": [],
+                "npcs": [],
                 "trail": list(self._trail),
             }
 
         now_ms = int(_kernel32.GetTickCount64())
         hooks_mask = int(st.hooks_mask)
         cam_fresh = bool(st.cam_valid) and (now_ms - int(st.cam_last_ms)) < 2000
+        save_rseq = int(st.save_read_seq)
+        save_wseq = int(st.save_write_seq)
+        save_slot = int(st.last_save_slot)
 
         if not hooks_mask or not cam_fresh:
             return {
@@ -350,14 +433,19 @@ class GRWLiveReader:
                 "status": "title" if st.build_matched else "build_mismatch",
                 "hooks_mask": hooks_mask,
                 "build_matched": bool(st.build_matched),
+                "save_read_seq": save_rseq,
+                "save_write_seq": save_wseq,
+                "last_save_slot": save_slot,
                 "player": None,
                 "drone": None,
                 "allies": [],
                 "enemies": [],
+                "rebels": [],
+                "civilians": [],
+                "npcs": [],
                 "trail": list(self._trail),
             }
 
-        # Indexa armas ativas por dono (entity_ptr / skel_ptr)
         weapon_by_owner: dict[int, GRWWeaponSlot] = {}
         for i in range(MAX_WEAPONS):
             w = st.weapons[i]
@@ -370,22 +458,29 @@ class GRWLiveReader:
 
         local_ent = int(st.local_player_entity)
         local_skel = int(st.local_player_skel)
+        mod_base = int(st.module_base)
+        coop_entities = {int(st.player_entities[k]) for k in range(min(8, int(st.player_entity_count))) if st.player_entities[k]}
+        coop_entities.discard(local_ent)
 
-        # Na tela inicial / Ghost Room, local_player_entity==0 e não há armas ativas em mundo aberto
         if local_ent == 0 and local_skel == 0 and not weapon_by_owner:
             return {
                 "mode": "title",
                 "status": "ghost_room_or_menu",
                 "hooks_mask": hooks_mask,
                 "build_matched": bool(st.build_matched),
+                "save_read_seq": save_rseq,
+                "save_write_seq": save_wseq,
+                "last_save_slot": save_slot,
                 "player": None,
                 "drone": None,
                 "allies": [],
                 "enemies": [],
+                "rebels": [],
+                "civilians": [],
+                "npcs": [],
                 "trail": list(self._trail),
             }
 
-        # Identifica vtable e rig do jogador local primeiro
         player_slot: GRWCharSlot | None = None
         player_vtable = 0
         player_rig = 0
@@ -404,7 +499,6 @@ class GRWLiveReader:
 
         cam_pos = (float(st.cam_pos[0]), float(st.cam_pos[1]), float(st.cam_pos[2]))
         cam_fwd = _norm3((float(st.cam_fwd[0]), float(st.cam_fwd[1]), float(st.cam_fwd[2])))
-        # Em matrizes de câmera OpenGL/Anvil, cam_fwd pode apontar -Z da câmera (ou +Z); normalizamos com sinal positivo para frente
         cam_fov = float(st.cam_fov_proj or st.cam_vfov or 0.85)
         is_ads = 0.05 < cam_fov < 0.72
 
@@ -422,13 +516,16 @@ class GRWLiveReader:
             pw = None
 
         w_class = WEAPON_CATEGORY_MAP.get(int(pw.weapon_category), "ar") if pw else "ar"
-        # Detecta silenciador via attachment_holder / extra flags (calibrado em Step 4; padrão True se categoria desconhecida)
-        w_suppressed = bool(int(pw.extra_u32[2]) & 1) if (pw and int(pw.extra_u32[2]) != 0) else True
+        if pw and int(pw.attachment_holder) != 0:
+            w_suppressed = bool(int(pw.muzzle_stuff) != 0)
+        elif pw and int(pw.extra_u32[2]) != 0:
+            w_suppressed = bool(int(pw.extra_u32[2]) & 1)
+        else:
+            w_suppressed = True
 
         pu, pv = self.world_to_uv(px, py)
         player_yaw = _vec_to_yaw_deg(cam_fwd)
 
-        # Trilha da sessão
         with self._lock:
             if self._last_trail_xy is None or math.hypot(px - self._last_trail_xy[0], py - self._last_trail_xy[1]) >= 8.0:
                 self._last_trail_xy = (px, py)
@@ -469,19 +566,26 @@ class GRWLiveReader:
 
         allies: list[dict[str, Any]] = []
         enemies: list[dict[str, Any]] = []
+        rebels: list[dict[str, Any]] = []
+        civilians: list[dict[str, Any]] = []
         ai_idx = 0
         coop_idx = 0
 
         for c in active_slots:
-            kind = self._classify_character(c, local_ent, local_skel, weapon_by_owner, player_vtable, player_rig)
-            if kind in ("player", "civilian"):
+            kind = self._classify_character(
+                c, local_ent, local_skel, weapon_by_owner, player_vtable, player_rig, mod_base, coop_entities
+            )
+            if kind == "player":
+                continue
+
+            alert_state = self._resolve_alert(c)
+            if alert_state == "down":
                 continue
 
             rx, ry, rz = float(c.root_pos[0]), float(c.root_pos[1]), float(c.root_pos[2])
             if not (c.valid_flags & 2):
                 continue
             ehx, ehy, ehz = float(c.head_pos[0]), float(c.head_pos[1]), float(c.head_pos[2])
-            # Filtra corpos caídos / bonecos no chão (< 0.35m altura cabeça-raiz sem arma ativa)
             w = weapon_by_owner.get(int(c.entity_ptr)) or weapon_by_owner.get(int(c.skel_ptr))
             if (ehz - rz) < 0.30 and w is None:
                 continue
@@ -491,12 +595,10 @@ class GRWLiveReader:
             yaw_deg = _vec_to_yaw_deg(look_dir)
             eu, ev = self.world_to_uv(rx, ry)
 
-            # Vetor de mira pela mão direita / cabeça quando armado
             aim_dir = look_dir
             is_aiming = False
             if (c.valid_flags & 4) and (ehz - rz) > 0.7:
                 rhx, rhy, rhz = float(c.rhand_pos[0]), float(c.rhand_pos[1]), float(c.rhand_pos[2])
-                # Quando a mão direita sobe próxima à altura do ombro/queixo, o personagem está mirando
                 if (ehz - rhz) < 0.42:
                     is_aiming = True
                     if (c.valid_flags & 8):
@@ -517,6 +619,7 @@ class GRWLiveReader:
                 allies.append({
                     "id": f"{kind}_{int(c.skel_ptr):x}",
                     "type": "coop" if kind == "ally_coop" else "ai",
+                    "faction": "ghost",
                     "name": label,
                     "x": round(rx, 2),
                     "y": round(ry, 2),
@@ -528,13 +631,21 @@ class GRWLiveReader:
                     "aim_dir": [round(aim_dir[0], 4), round(aim_dir[1], 4), round(aim_dir[2], 4)],
                     "yaw": round(yaw_deg, 1),
                     "is_aiming": is_aiming,
+                    "alert": alert_state,
                     "weapon_class": aw_cls,
-                    "suppressed": None,
+                    "suppressed": (bool(int(w.muzzle_stuff) != 0) if (w and int(w.attachment_holder) != 0) else None),
+                    "alive": True,
                 })
-            elif kind in ("enemy_sb", "enemy_unidad"):
-                enemies.append({
-                    "id": f"en_{int(c.skel_ptr):x}",
-                    "faction": "unidad" if kind == "enemy_unidad" else "santa_blanca",
+            else:
+                faction_str = {
+                    "enemy_unidad": "unidad",
+                    "enemy_sb": "santa_blanca",
+                    "rebel": "rebel",
+                    "civilian": "civilian",
+                }.get(kind, "santa_blanca")
+                npc_obj = {
+                    "id": f"npc_{int(c.skel_ptr):x}",
+                    "faction": faction_str,
                     "x": round(rx, 2),
                     "y": round(ry, 2),
                     "z": round(rz, 2),
@@ -543,18 +654,32 @@ class GRWLiveReader:
                     "head": [round(ehx, 2), round(ehy, 2), round(ehz, 2)],
                     "look_dir": [round(look_dir[0], 4), round(look_dir[1], 4), round(look_dir[2], 4)],
                     "yaw": round(yaw_deg, 1),
-                    "alert": "unaware",
+                    "alert": alert_state,
                     "alive": True,
-                })
+                    "has_weapon": w is not None,
+                    "weapon_class": WEAPON_CATEGORY_MAP.get(int(w.weapon_category), "ar") if w else None,
+                }
+                if faction_str in ("santa_blanca", "unidad"):
+                    enemies.append(npc_obj)
+                elif faction_str == "rebel":
+                    rebels.append(npc_obj)
+                else:
+                    civilians.append(npc_obj)
 
         return {
             "mode": "live",
             "status": "live",
             "hooks_mask": hooks_mask,
             "frame_tick": int(st.frame_tick),
+            "save_read_seq": save_rseq,
+            "save_write_seq": save_wseq,
+            "last_save_slot": save_slot,
             "player": player_obj,
             "drone": drone_obj,
             "allies": allies,
             "enemies": enemies,
+            "rebels": rebels,
+            "civilians": civilians,
+            "npcs": enemies + rebels + civilians,
             "trail": list(self._trail),
         }

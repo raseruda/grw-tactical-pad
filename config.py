@@ -22,6 +22,7 @@ TILES_CACHE_DIR = CACHE_DIR / "tiles"
 ICONS_CACHE_DIR = CACHE_DIR / "icons"
 MASKS_CACHE_DIR = CACHE_DIR / "masks"
 DATA_DIR = ROOT_DIR / "data"
+LIVE_SAVES_DIR = DATA_DIR / "live_saves"
 WEB_DIR = ROOT_DIR / "web"
 
 SETTINGS_PATH = DATA_DIR / "settings.json"
@@ -31,9 +32,30 @@ META_PATH = CACHE_DIR / "meta.json"
 MAP_DATA_PATH = CACHE_DIR / "map_data.json"
 CATALOG_PATH = CACHE_DIR / "catalog.json"
 CARTEL_PATH = CACHE_DIR / "cartel.json"
+FORGE_IDS_PATH = CACHE_DIR / "forge_ids.json"
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 DEFAULT_PORT = 8766
+
+# Enum interno verificado em GRW.exe (0x3ab39c0 / 0x3b16480) para LAUNCHER_GAME_LANGUAGE
+GRW_LAUNCHER_LANG_MAP: dict[int, str] = {
+    1: "en-US",
+    2: "fr-FR",
+    3: "it-IT",
+    4: "de-DE",
+    5: "ru-RU",
+    6: "es-ES",
+    7: "es-LA",
+    8: "pt-BR",
+    9: "ja-JP",
+    10: "ar-SA",
+    11: "nl-NL",
+    12: "cs-CZ",
+    13: "pl-PL",
+    14: "zh-TW",
+    15: "zh-CN",
+    16: "ko-KR",
+}
 
 SUPPORTED_LANGUAGES: list[dict[str, str]] = [
     {"code": "en-US", "label": "English (US)", "forge": "LocalizationPackage_English(US)"},
@@ -80,6 +102,13 @@ DEFAULT_UI_PREFS: dict[str, Any] = {
     "showEnemyVisionCones": True,
     "showEnemyHearingRings": False,
     "showWeaponNoiseRing": True,
+    "weaponNoiseRingMode": "always",  # always | aiming
+    "visionFactions": ["santa_blanca", "unidad"],
+    "soundFactions": ["santa_blanca", "unidad"],
+    "showFactionSantaBlanca": True,
+    "showFactionUnidad": True,
+    "showFactionRebel": True,
+    "showFactionCivilian": True,
     "showSafeToFireHud": True,
     "showPlayerAimWarning": True,
     "showAlliesSolo": True,
@@ -104,6 +133,7 @@ DEFAULT_UI_PREFS: dict[str, Any] = {
     "wikiClassFilter": "all",
     "wikiMissingOnly": False,
     "cartelWingFilter": "all",
+    "selectedProvince": None,
 }
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -125,7 +155,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 def ensure_dirs() -> None:
     """Garante existência das pastas de cache e persistência."""
-    for d in (CACHE_DIR, TILES_CACHE_DIR, ICONS_CACHE_DIR, MASKS_CACHE_DIR, DATA_DIR):
+    for d in (CACHE_DIR, TILES_CACHE_DIR, ICONS_CACHE_DIR, MASKS_CACHE_DIR, DATA_DIR, LIVE_SAVES_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 
@@ -179,6 +209,53 @@ def normalize_locale(raw: str | None) -> str | None:
     return None
 
 
+def _get_my_documents_dir() -> Path | None:
+    """Resolve a pasta Documentos do usuário via CSIDL_PERSONAL (suporta redirecionamento OneDrive)."""
+    try:
+        buf = ctypes.create_unicode_buffer(260)
+        if ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf) == 0 and buf.value:
+            p = Path(buf.value)
+            if p.is_dir():
+                return p
+    except Exception:
+        pass
+    home_docs = Path.home() / "Documents"
+    return home_docs if home_docs.is_dir() else None
+
+
+def read_grw_launcher_language(docs_dir: Path | None = None) -> str | None:
+    """Lê o idioma ativo do jogo em <Documentos>/My Games/Ghost Recon Wildlands/LAUNCHER_GAME_LANGUAGE."""
+    base_docs = docs_dir or _get_my_documents_dir()
+    if base_docs is None:
+        return None
+    grw_docs = base_docs / "My Games" / "Ghost Recon Wildlands"
+    for fname in ("LAUNCHER_GAME_LANGUAGE", "BOOT"):
+        fpath = grw_docs / fname
+        try:
+            if not fpath.is_file():
+                continue
+            raw = fpath.read_bytes()
+            if not raw:
+                continue
+            if 1 <= len(raw) <= 4:
+                code_int = int.from_bytes(raw[:4], "little", signed=False)
+                if len(raw) == 1:
+                    code_int = raw[0]
+                elif raw[1:] == b"\x00" * (len(raw) - 1):
+                    code_int = raw[0]
+                if code_int in GRW_LAUNCHER_LANG_MAP:
+                    return GRW_LAUNCHER_LANG_MAP[code_int]
+            txt = raw.decode("utf-8", errors="ignore").strip("\x00\r\n\t ")
+            if txt.isdigit() and int(txt) in GRW_LAUNCHER_LANG_MAP:
+                return GRW_LAUNCHER_LANG_MAP[int(txt)]
+            norm = normalize_locale(txt)
+            if norm:
+                return norm
+        except OSError:
+            continue
+    return None
+
+
 def _read_steam_manifest_lang(game_dir: Path) -> str | None:
     """Tenta ler o idioma configurado no Steam (appmanifest_460930.acf)."""
     try:
@@ -206,12 +283,16 @@ def _read_windows_locale() -> str | None:
 
 
 def detect_game_language(game_dir: Path | None = None) -> tuple[str, str]:
-    """Detecta o idioma do jogo (env -> Steam ACF -> Windows UI -> en-US)."""
+    """Detecta o idioma do jogo (env -> GRW LAUNCHER_GAME_LANGUAGE -> Steam ACF -> Windows UI -> en-US)."""
     for env_key in ("GRW_LANG", "GHOSTPAD_LANG"):
         val = os.environ.get(env_key)
         norm = normalize_locale(val)
         if norm:
             return norm, f"env:{env_key}"
+
+    grw_lang = read_grw_launcher_language()
+    if grw_lang:
+        return grw_lang, "grw:LAUNCHER_GAME_LANGUAGE"
 
     if game_dir:
         acf_lang = _read_steam_manifest_lang(game_dir)
@@ -276,18 +357,25 @@ def save_settings(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_progress() -> dict[str, Any]:
-    """Lê lista de itens/POIs/missões marcados pelo jogador como concluídos/coletados."""
+    """Lê lista de itens/POIs/missões marcados manualmente ou sincronizados do jogo."""
     ensure_dirs()
     with _PROGRESS_LOCK:
         if PROGRESS_PATH.is_file():
             try:
                 data = json.loads(PROGRESS_PATH.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
+                    sync_info = data.get("auto_sync_info")
                     return {
                         "collected_items": list(data.get("collected_items") or []),
                         "completed_pois": list(data.get("completed_pois") or []),
                         "discovered_provinces": list(data.get("discovered_provinces") or []),
                         "defeated_bosses": list(data.get("defeated_bosses") or []),
+                        "completed_missions": list(data.get("completed_missions") or []),
+                        "auto_collected_items": list(data.get("auto_collected_items") or []),
+                        "auto_completed_pois": list(data.get("auto_completed_pois") or []),
+                        "auto_completed_missions": list(data.get("auto_completed_missions") or []),
+                        "auto_defeated_bosses": list(data.get("auto_defeated_bosses") or []),
+                        "auto_sync_info": dict(sync_info) if isinstance(sync_info, dict) else {},
                     }
             except (OSError, json.JSONDecodeError):
                 pass
@@ -296,17 +384,30 @@ def load_progress() -> dict[str, Any]:
             "completed_pois": [],
             "discovered_provinces": ["itacua"],
             "defeated_bosses": [],
+            "completed_missions": [],
+            "auto_collected_items": [],
+            "auto_completed_pois": [],
+            "auto_completed_missions": [],
+            "auto_defeated_bosses": [],
+            "auto_sync_info": {},
         }
 
 
 def save_progress(data: dict[str, Any]) -> dict[str, Any]:
     ensure_dirs()
     with _PROGRESS_LOCK:
+        sync_info = data.get("auto_sync_info")
         clean = {
             "collected_items": sorted(set(str(x) for x in (data.get("collected_items") or []))),
             "completed_pois": sorted(set(str(x) for x in (data.get("completed_pois") or []))),
             "discovered_provinces": sorted(set(str(x) for x in (data.get("discovered_provinces") or []))),
             "defeated_bosses": sorted(set(str(x) for x in (data.get("defeated_bosses") or []))),
+            "completed_missions": sorted(set(str(x) for x in (data.get("completed_missions") or []))),
+            "auto_collected_items": sorted(set(str(x) for x in (data.get("auto_collected_items") or []))),
+            "auto_completed_pois": sorted(set(str(x) for x in (data.get("auto_completed_pois") or []))),
+            "auto_completed_missions": sorted(set(str(x) for x in (data.get("auto_completed_missions") or []))),
+            "auto_defeated_bosses": sorted(set(str(x) for x in (data.get("auto_defeated_bosses") or []))),
+            "auto_sync_info": dict(sync_info) if isinstance(sync_info, dict) else {},
         }
         tmp = PROGRESS_PATH.with_suffix(".tmp")
         tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
