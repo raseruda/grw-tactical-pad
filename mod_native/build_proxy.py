@@ -750,7 +750,7 @@ static void read_npc_faction_alert(uint64_t npc, GRWCharSlot *slot) {{
         uint64_t p418 = *(const uint64_t *)(npc + 0x418);
         if (ptr_ok(p418)) {{
             int32_t f = *(const int32_t *)(p418 + 0xA0);
-            if (f >= 0 && f <= 7) f418 = f;
+            if (f >= 0 && f <= 8) f418 = f;
         }}
         if (f418 > 0) {{
             npc_fac = f418;
@@ -759,16 +759,16 @@ static void read_npc_faction_alert(uint64_t npc, GRWCharSlot *slot) {{
             uint64_t p120 = *(const uint64_t *)(npc + 0x120);
             if (ptr_ok(p120)) {{
                 int32_t f = *(const int32_t *)(p120 + 0x38);
-                if (f >= 1 && f <= 7) npc_fac = f;
+                if (f >= 1 && f <= 8) npc_fac = f;
             }}
         }}
         if (npc_fac <= 0) {{
             int32_t f2d4 = *(const int32_t *)(npc + 0x2D4);
-            if (f2d4 >= 1 && f2d4 <= 7) npc_fac = f2d4;
+            if (f2d4 >= 1 && f2d4 <= 8) npc_fac = f2d4;
         }}
         if (npc_fac <= 0) {{
             int32_t f328 = *(const int32_t *)(npc + 0x328);
-            if (f328 >= 1 && f328 <= 7) npc_fac = f328;
+            if (f328 >= 1 && f328 <= 8) npc_fac = f328;
         }}
         if (npc_fac < 0 && f418 == 0) {{
             npc_fac = 0;
@@ -1141,7 +1141,7 @@ static void record_skeleton(uint64_t skel) {{
             read_npc_faction_alert(l_npc, slot);
         }}
         if (ptr_ok(ent)) {{
-            /* Entity::GetFaction (GRW.exe 0x00A179E0 -> 0x0A490390): bits 10..13 de *(uint32_t*)(ent + 0xD0) - 1 = eFaction (0..7) */
+            /* Entity::GetFaction (GRW.exe 0x00A179E0 -> 0x0A490390): bits 10..13 de *(uint32_t*)(ent + 0xD0) - 1 = eFaction (0..8) */
             uint32_t ent_d0 = *(const uint32_t *)(ent + 0xD0);
             uint32_t fbits = (ent_d0 >> 10) & 0x0Fu;
             if (fbits == 0u) {{
@@ -1149,13 +1149,13 @@ static void record_skeleton(uint64_t skel) {{
                 if (ptr_ok(parent_ent)) {{
                     uint32_t pd0 = *(const uint32_t *)(parent_ent + 0xD0);
                     uint32_t pfbits = (pd0 >> 10) & 0x0Fu;
-                    if (pfbits >= 1u && pfbits <= 8u) {{
+                    if (pfbits >= 1u && pfbits <= 9u) {{
                         ent_d0 = pd0;
                         fbits = pfbits;
                     }}
                 }}
             }}
-            int32_t ent_fac = (fbits >= 1u && fbits <= 8u) ? (int32_t)(fbits - 1u) : -1;
+            int32_t ent_fac = (fbits >= 1u && fbits <= 9u) ? (int32_t)(fbits - 1u) : -1;
             if (ent_fac >= 0) {{
                 slot->faction_raw = ent_fac;
             }} else if (slot->faction_1e8 >= 0) {{

@@ -101,15 +101,16 @@ def _render_fallback_icon(cat_id: str, color_hex: str, out_path: Path) -> None:
 
 
 def _build_province_masks(sectors_bytes: bytes) -> None:
-    """Gera overlays PNG de borda da Bolívia e divisões regionais a partir de UI_Tacmap_ProvinceMap_Map (1024x1024)."""
+    """Gera overlays PNG de borda da Bolívia e divisões regionais a partir de UI_Tacmap_ProvinceMap_Map (1024x1024, invertido verticalmente)."""
     if len(sectors_bytes) != 1024 * 1024:
         return
-    (MASKS_CACHE_DIR / "sectors.bin").write_bytes(sectors_bytes)
-
     w = h = 1024
+    # Texturas TextureMap Anvil vêm de baixo para cima; invertendo para cima->baixo alinha ao gr.wmap
+    data = b"".join(sectors_bytes[(h - 1 - y) * w : (h - y) * w] for y in range(h))
+    (MASKS_CACHE_DIR / "sectors.bin").write_bytes(data)
+
     border_buf = bytearray(w * h * 4)
     prov_buf = bytearray(w * h * 4)
-    data = sectors_bytes
 
     for y in range(h):
         row_off = y * w
@@ -164,7 +165,7 @@ _DOC_PREFIX_TO_PROVINCE: dict[str, str] = {
     "04": "espiritu_santo",
     "05": "san_mateo",
     "06": "agua_verde",
-    "08": "monte_puncu",
+    "08": "villa_verde",
     "09": "villa_verde",
     "10": "montuyoc",
     "11": "itacua",
@@ -180,8 +181,6 @@ _DOC_PREFIX_TO_PROVINCE: dict[str, str] = {
     "22": "mojocoyo",
     "23": "remanzo",
     "25": "koani",
-    "ORA": "montuyoc",
-    "SPD": "media_luna",
 }
 
 _WM_PNUM_TO_PROVINCE: dict[int, str] = {
@@ -320,8 +319,8 @@ def _extract_worldmap_collectibles(
     t3_docs: dict[str, str],
     t4_loot: dict[str, str],
 ) -> dict[str, Any]:
-    """Extrai todos os 211 Documentos (Kingslayer), 149 Pontos de Habilidade e 30 Medalhas do GRN_WorldMap."""
-    out: dict[str, Any] = {"documents": [], "skill_points": [], "medals": []}
+    """Extrai Documentos (Kingslayer), 149 Pontos de Habilidade, 30 Medalhas e 150 Caixas de Armas/Acessórios do GRN_WorldMap."""
+    out: dict[str, Any] = {"documents": [], "skill_points": [], "medals": [], "loot_cases": []}
     if game_dir is None:
         return out
     wm_path = game_dir / "DataPC_GRN_WorldMap_patch_01.forge"
@@ -384,9 +383,10 @@ def _extract_worldmap_collectibles(
         r["id"] = f"ks_{pr}_{idx:02d}"
     out["documents"] = doc_records
 
-    # 2. Pontos de Habilidade e Medalhas Bônus (classe Anvil 0xB3B2A583)
+    # 2. Pontos de Habilidade, Medalhas Bônus e Caixas de Arma/Acessório (classe Anvil 0xB3B2A583)
     skill_records: list[dict[str, Any]] = []
     medal_records: list[dict[str, Any]] = []
+    loot_records: list[dict[str, Any]] = []
     pos = 0
     sig_loot = b"\xf8\x00\x00\x00\x00\x83\xa5\xb2\xb3"
     while True:
@@ -403,7 +403,7 @@ def _extract_worldmap_collectibles(
             continue
         pnum = int(t2 >> 8)
         prov_id = _WM_PNUM_TO_PROVINCE.get(pnum)
-        if not prov_id:
+        if not prov_id or q1 == 0:
             continue
         u = round(max(0.01, min(0.99, (x + 8192.0) / 16384.0)), 4)
         v = round(max(0.01, min(0.99, 1.0 - (y + 8192.0) / 16384.0)), 4)
@@ -430,6 +430,17 @@ def _extract_worldmap_collectibles(
                 "y": round(y, 1),
                 "z": round(z, 1),
             })
+        elif t0 == 1024 and loot_name:
+            loot_records.append({
+                "vid": int(vid),
+                "province": prov_id,
+                "gbs_name": loot_name,
+                "u": u,
+                "v": v,
+                "x": round(x, 1),
+                "y": round(y, 1),
+                "z": round(z, 1),
+            })
 
     skill_records.sort(key=lambda r: (r["province"], r["v"], r["u"]))
     prov_skill_counts: dict[str, int] = {}
@@ -440,6 +451,7 @@ def _extract_worldmap_collectibles(
         r["id"] = f"skill_{pr}_{idx:02d}"
     out["skill_points"] = skill_records
     out["medals"] = medal_records
+    out["loot_cases"] = loot_records
     return out
 
 
@@ -508,7 +520,7 @@ def _build_forge_ids_index(forge: ForgeArchive, game_dir: Path | None = None) ->
     wm_collectibles = _extract_worldmap_collectibles(game_dir, t3_docs, t4_loot)
 
     return {
-        "version": 4,
+        "version": CACHE_VERSION,
         "weapons": weapons_fids,
         "attachments": atts_fids,
         "provinces": provinces_fids,

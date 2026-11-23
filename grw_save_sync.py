@@ -545,6 +545,8 @@ class AutoProgressSync:
             for poi in self._pois:
                 if poi.get("cat") not in valid_cats:
                     continue
+                if poi.get("vid") is not None:
+                    continue
                 if allowed_provinces and poi.get("province") not in allowed_provinces:
                     continue
                 d_m = math.hypot((float(poi["u"]) - u) * 16384.0, (float(poi["v"]) - v) * 16384.0)
@@ -601,7 +603,7 @@ class AutoProgressSync:
             pois |= p_pois
 
         if has_campaign_chunk:
-            items.update(("wp_p416", "wp_p45t"))
+            items.update(("wp_p416", "wp_p45t", "wp_mp5", "wp_m1014"))
             for wid, bprov in BOSS_REWARD_PROVINCE_MAP.items():
                 if bprov in bosses:
                     items.add(wid)
@@ -763,7 +765,6 @@ class AutoProgressSync:
                         profile_loaded = True
                         sources_used.append(label)
                         items |= parsed["items"]
-                        pois |= parsed["pois"]
             elif plaintext is not None and label.startswith("live:"):
                 legacy = self.scan_plaintext_buffer(plaintext)
                 if legacy["items"] or legacy["provinces"]:
@@ -838,7 +839,7 @@ class AutoProgressSync:
     def _apply_save_scan_to_progress(self, cur: dict[str, Any], scanned: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         changed = False
         sync_ver = int((cur.get("auto_sync_info") or {}).get("sync_version") or 0)
-        upgrading_v2 = sync_ver < 2
+        upgrading_v2 = sync_ver < 3
         if upgrading_v2:
             # Limpa IDs gerados pela heurística antiga v1 mantendo edições manuais do usuário
             for k_cur, k_auto in (
@@ -899,7 +900,7 @@ class AutoProgressSync:
         if scanned.get("sources") or upgrading_v2:
             old_info = dict(cur.get("auto_sync_info") or {})
             new_info = {
-                "sync_version": 2,
+                "sync_version": 3,
                 "sources": list(scanned.get("sources") or []),
                 "weapons_found": len(found_items),
                 "bosses_found": len(found_bosses),
@@ -966,7 +967,7 @@ class AutoProgressSync:
         }
         sync_ver = int(cur["auto_sync_info"].get("sync_version") or 0)
         live_changed, disk_changed, live_sigs, disk_sigs = self._collect_signatures(save_paths)
-        if not force and sync_ver >= 2 and not live_changed and not disk_changed:
+        if not force and sync_ver >= 3 and not live_changed and not disk_changed:
             return cur, False
 
         self._last_live_file_sigs = live_sigs
@@ -1004,7 +1005,7 @@ class AutoProgressSync:
         self._last_write_seq = wseq
 
         now = time.monotonic()
-        need_v2_upgrade = int(cur["auto_sync_info"].get("sync_version") or 0) < 2
+        need_v2_upgrade = int(cur["auto_sync_info"].get("sync_version") or 0) < 3
         if seq_changed or need_v2_upgrade or (now - self._last_disk_poll_ts) >= 5.0:
             self._last_disk_poll_ts = now
             live_changed, disk_changed, live_sigs, disk_sigs = self._collect_signatures(save_paths)
@@ -1026,7 +1027,7 @@ class AutoProgressSync:
 
         player = frame.get("player")
         if mode == "live" and player:
-            found_items.update(("wp_p416", "wp_p45t"))
+            found_items.update(("wp_p416", "wp_p45t", "wp_mp5", "wp_m1014"))
             pu = float(player.get("u", 0.5))
             pv = float(player.get("v", 0.5))
             near_prov = self._nearest_province(pu, pv)

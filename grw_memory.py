@@ -21,8 +21,8 @@ TELEMETRY_VERSION = 2
 TH32CS_SNAPPROCESS = 0x00000002
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
-# Mapeamento exato recuperado de GRW.exe (0x3b88c98..0x3b88cec):
-# 0=Neutral, 1=Civilian, 2=Ghost, 3=MexCartel, 4=MexTraitor, 5=Unidad, 6=Penitentes, 7=Rebel
+# Mapeamento exato da jump table 0x027D8770 (função 0x1427D7F4E) em GRW.exe:
+# 0=Neutral, 1=Civilian, 2=Ghost, 3=MexCartel, 4=MexTraitor, 5=Unidad, 6=Rebel, 7=Rebel, 8=Penitentes
 EFACTION_MAP: dict[int, str] = {
     0: "civilian",
     1: "civilian",
@@ -30,8 +30,9 @@ EFACTION_MAP: dict[int, str] = {
     3: "santa_blanca",
     4: "santa_blanca",
     5: "unidad",
-    6: "santa_blanca",
+    6: "rebel",
     7: "rebel",
+    8: "santa_blanca",
 }
 
 # Mapeamento exato recuperado de GRW.exe (0x13bea785 jump table 0x27d918c):
@@ -384,7 +385,7 @@ class GRWLiveReader:
         # Combina facção de Entity::GetFaction (ent + 0xD0 bits 10..13) e subcomponentes de GR_cNPCComponent
         ent_d0 = int(c.ent_u32[31])
         d0_bits = (ent_d0 >> 10) & 0x0F
-        fac_d0 = EFACTION_MAP.get(d0_bits - 1) if 1 <= d0_bits <= 8 else None
+        fac_d0 = EFACTION_MAP.get(d0_bits - 1) if 1 <= d0_bits <= 9 else None
         fac_0 = EFACTION_MAP.get(int(c.faction_raw))
         fac_1 = EFACTION_MAP.get(int(c.faction_1e8))
 
@@ -425,6 +426,8 @@ class GRWLiveReader:
             return "ally_ai_candidate"
 
         has_weapon = (c.entity_ptr in weapon_by_owner) or (c.skel_ptr in weapon_by_owner)
+        if int(c.npc_vtable) == 0 and not has_weapon and int(c.faction_raw) < 0 and int(c.faction_1e8) < 0:
+            return "civilian"
         if not has_weapon and c.bone_count < 140:
             return "civilian"
         return "enemy_sb"

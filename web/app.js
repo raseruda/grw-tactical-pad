@@ -1175,14 +1175,11 @@
 
     const defs = [
       ["missions", "cartel.missionsLabel", "mission"],
+      ["kingslayer", "cartel.kingslayerLabel", "poi"],
       ["weapons", "cartel.weaponsLabel", "item"],
       ["attachments", "cartel.attachmentsLabel", "item"],
-      ["medals", "cartel.medalsLabel", "item"],
       ["skill_points", "cartel.skillPointsLabel", "poi"],
-      ["kingslayer", "cartel.kingslayerLabel", "poi"],
-      ["rebel_ops", "cartel.rebelOpsLabel", "poi"],
-      ["rally_points", "cartel.rallyPointsLabel", "poi"],
-      ["bases", "cartel.basesLabel", "poi"],
+      ["medals", "cartel.medalsLabel", "item"],
     ];
 
     const completed = [];

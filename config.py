@@ -34,7 +34,7 @@ CATALOG_PATH = CACHE_DIR / "catalog.json"
 CARTEL_PATH = CACHE_DIR / "cartel.json"
 FORGE_IDS_PATH = CACHE_DIR / "forge_ids.json"
 
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 DEFAULT_PORT = 8766
 
 # Enum interno verificado em GRW.exe (0x3ab39c0 / 0x3b16480) para LAUNCHER_GAME_LANGUAGE

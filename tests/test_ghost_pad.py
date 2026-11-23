@@ -317,8 +317,9 @@ class TestTelemetryLanguageAndAutoSync(unittest.TestCase):
         self.assertEqual(EFACTION_MAP[3], "santa_blanca")
         self.assertEqual(EFACTION_MAP[4], "santa_blanca")
         self.assertEqual(EFACTION_MAP[5], "unidad")
-        self.assertEqual(EFACTION_MAP[6], "santa_blanca")
+        self.assertEqual(EFACTION_MAP[6], "rebel")
         self.assertEqual(EFACTION_MAP[7], "rebel")
+        self.assertEqual(EFACTION_MAP[8], "santa_blanca")
         self.assertEqual(EALERT_MAP[3], "suspected")
         self.assertEqual(EALERT_MAP[6], "hostile")
 
@@ -639,7 +640,7 @@ class TestBugfixesV120(unittest.TestCase):
         p.valid_flags = 3
         p.last_seen_ms = now_ms
 
-        # Rebelde com arma equipada e faction_raw=0 (Neutro no subcomponente 0x258), mas Entity+0xD0 bits 10..13 = 8 (8-1 = 7 = Rebel)
+        # Rebelde Kataris 26 com arma equipada e faction_raw=0, Entity+0xD0=0x1d1a (bits 10..13 = 7 -> 7-1 = 6 = Rebel)
         # e visto há 2100ms (fora do frustum da câmera com throttling de LOD)
         reb = st.chars[1]
         reb.entity_ptr = 0x3000
@@ -649,11 +650,11 @@ class TestBugfixesV120(unittest.TestCase):
         reb.faction_raw = 0
         reb.faction_1e8 = -1
         reb.alert_raw = 1
-        reb.ent_u32[31] = 8 << 10  # (fbits - 1) == 7 (Rebel)
+        reb.ent_u32[31] = 0x1D1A  # (fbits - 1) == 6 (Kataris 26 Rebel)
         reb.root_pos[0], reb.root_pos[1], reb.root_pos[2] = 25.0, 30.0, 100.0
         reb.head_pos[0], reb.head_pos[1], reb.head_pos[2] = 25.0, 30.0, 101.6
 
-        # Caso regressão v1.3.0: mesmo se subcomponente secundário trouxer 3 (MexCartel), Entity+0xD0=Rebelde deve vencer!
+        # Caso regressão v1.3.0: mesmo se subcomponente secundário trouxer 3 (MexCartel), Entity+0xD0=0x21d1a (Rebelde) deve vencer!
         reb2 = st.chars[2]
         reb2.entity_ptr = 0x3001
         reb2.skel_ptr = 0x4001
@@ -662,7 +663,7 @@ class TestBugfixesV120(unittest.TestCase):
         reb2.faction_raw = 3  # Santa Blanca em campo secundário
         reb2.faction_1e8 = 3
         reb2.alert_raw = 1
-        reb2.ent_u32[31] = (7 + 1) << 10  # Entity::GetFaction = 7 (Rebel)
+        reb2.ent_u32[31] = 0x21D1A  # Entity::GetFaction = 6 (Rebel)
         reb2.root_pos[0], reb2.root_pos[1], reb2.root_pos[2] = 35.0, 40.0, 100.0
         reb2.head_pos[0], reb2.head_pos[1], reb2.head_pos[2] = 35.0, 40.0, 101.6
 
@@ -894,6 +895,29 @@ class TestBugfixesV120(unittest.TestCase):
                     self.assertIn(f"ks_agua_verde_{idx:02d}", prog["completed_pois"])
                 for idx in range(1, 8):
                     self.assertIn(f"skill_agua_verde_{idx:02d}", prog["completed_pois"])
+
+                # Itacua deve ter exatamente 34 itens de campanha sincronizados (6/10/3/5/8/2)
+                it_p = next(p for p in cartel_data["provinces"] if p["id"] == "itacua")
+                it_t = it_p["tasks"]
+                self.assertEqual(len(it_t["missions"]), 6)
+                self.assertEqual(len(it_t["kingslayer"]), 10)
+                self.assertEqual(len(it_t["weapons"]), 3)
+                self.assertEqual(len(it_t["attachments"]), 5)
+                self.assertEqual(len(it_t["skill_points"]), 8)
+                self.assertEqual(len(it_t["medals"]), 2)
+                self.assertTrue(all(m["id"] in prog["completed_missions"] for m in it_t["missions"]))
+                self.assertTrue(all(k["poi_id"] in prog["completed_pois"] for k in it_t["kingslayer"]))
+                self.assertTrue(all(w["item_id"] in prog["collected_items"] for w in it_t["weapons"]))
+                self.assertTrue(all(a["item_id"] in prog["collected_items"] for a in it_t["attachments"]))
+                self.assertTrue(all(s["poi_id"] in prog["completed_pois"] for s in it_t["skill_points"]))
+                self.assertTrue(all(md["item_id"] in prog["collected_items"] for md in it_t["medals"]))
+
+                # Espíritu Santo não deve ter falso-positivo de pontos de habilidade nem da medalha Quiet Running
+                es_p = next(p for p in cartel_data["provinces"] if p["id"] == "espiritu_santo")
+                es_t = es_p["tasks"]
+                self.assertEqual(len(es_t["skill_points"]), 6)
+                self.assertTrue(all(s["poi_id"] not in prog["completed_pois"] for s in es_t["skill_points"]))
+                self.assertNotIn("med_quiet_run", prog["collected_items"])
             finally:
                 gs.FORGE_IDS_PATH, gs.CARTEL_PATH, gs.MAP_DATA_PATH, gs.CATALOG_PATH = old_paths
 
