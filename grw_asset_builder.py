@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import struct
 import threading
 import time
 from pathlib import Path
@@ -156,8 +157,73 @@ def _build_province_masks(sectors_bytes: bytes) -> None:
     Image.frombytes("RGBA", (w, h), bytes(prov_buf)).save(MASKS_CACHE_DIR / "provinces_overlay.png", "PNG")
 
 
-def _build_forge_ids_index(forge: ForgeArchive) -> dict[str, Any]:
-    """Indexa fid (64-bit) e tokens reais do DataPC.forge para armas, acessórios e províncias concluídas."""
+def _extract_gbs_tables(game_dir: Path | None, fallback_forge: ForgeArchive | None = None) -> tuple[dict[str, str], dict[str, str]]:
+    """Extrai tabelas Anvil (Table 1 missões/províncias `0x830B78C0` e Table 2 armas/acessórios `0x36C9CB38`) do Game Bootstrap Settings."""
+    gbs_blob: bytes | None = None
+    candidates: list[ForgeArchive] = []
+    if game_dir is not None:
+        patch_path = game_dir / "DataPC_patch_01.forge"
+        if patch_path.is_file():
+            try:
+                candidates.append(ForgeArchive(patch_path))
+            except Exception:
+                pass
+    if fallback_forge is not None:
+        candidates.append(fallback_forge)
+
+    for arch in candidates:
+        try:
+            entries = arch.find_by_name("Game Bootstrap Settings")
+            if entries:
+                sets = arch.read_payload_sets(entries[0])
+                if sets:
+                    gbs_blob = b"".join(sets)
+                    break
+        except Exception:
+            continue
+
+    if not gbs_blob:
+        return {}, {}
+
+    t1: dict[str, str] = {}
+    pos = 0
+    blob_len = len(gbs_blob)
+    while True:
+        i = gbs_blob.find(b"\xc0\x78\x0b\x83", pos)
+        if i == -1:
+            break
+        if i + 8 <= blob_len:
+            slen = struct.unpack_from("<I", gbs_blob, i + 4)[0]
+            if 1 <= slen <= 160 and i + 17 + slen <= blob_len and gbs_blob[i + 8 + slen] == 0:
+                name = gbs_blob[i + 8 : i + 8 + slen].decode("ascii", errors="replace")
+                vid = struct.unpack_from("<Q", gbs_blob, i + 9 + slen)[0]
+                if vid > 0x10000 and name:
+                    t1[str(vid)] = name
+                pos = i + 17 + slen
+                continue
+        pos = i + 4
+
+    t2: dict[str, str] = {}
+    pos = 10
+    while True:
+        i = gbs_blob.find(b"\x38\xcb\xc9\x36", pos)
+        if i == -1 or i + 16 > blob_len:
+            break
+        slen = struct.unpack_from("<I", gbs_blob, i + 8)[0]
+        if 2 <= slen <= 160 and i + 12 + slen < blob_len and gbs_blob[i + 12 + slen] == 0:
+            name = gbs_blob[i + 12 : i + 12 + slen].decode("ascii", errors="replace")
+            vid = struct.unpack_from("<Q", gbs_blob, i - 10)[0]
+            if vid > 0x10000 and name:
+                t2[str(vid)] = name
+            pos = i + 13 + slen
+            continue
+        pos = i + 4
+
+    return t1, t2
+
+
+def _build_forge_ids_index(forge: ForgeArchive, game_dir: Path | None = None) -> dict[str, Any]:
+    """Indexa IDs Anvil do DataPC.forge e tabelas do Game Bootstrap Settings para sincronização de saves."""
     weapons_fids: dict[str, list[dict[str, Any]]] = {}
     atts_fids: dict[str, list[dict[str, Any]]] = {}
     provinces_fids: dict[str, list[dict[str, Any]]] = {}
@@ -217,11 +283,16 @@ def _build_forge_ids_index(forge: ForgeArchive) -> dict[str, Any]:
             if len(parts) >= 2:
                 collectibles_fids.setdefault(parts[1], []).append(int(e["fid"]))
 
+    t1_missions, t2_items = _extract_gbs_tables(game_dir, fallback_forge=forge)
+
     return {
+        "version": 2,
         "weapons": weapons_fids,
         "attachments": atts_fids,
         "provinces": provinces_fids,
         "collectible_fids": collectibles_fids,
+        "table1_missions": t1_missions,
+        "table2_items": t2_items,
     }
 
 
@@ -312,7 +383,7 @@ def ensure_cache_built(
             if progress_cb:
                 progress_cb(72, "Indexing Anvil unlock & province IDs...")
             try:
-                forge_ids = _build_forge_ids_index(forge)
+                forge_ids = _build_forge_ids_index(forge, game_dir=game_dir)
                 FORGE_IDS_PATH.write_text(json.dumps(forge_ids, ensure_ascii=False), encoding="utf-8")
             except Exception:
                 pass

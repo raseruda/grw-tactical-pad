@@ -12,7 +12,7 @@ window.GhostMap = (() => {
       this.camV = 0.5;
       this.zoom = 0.035; // zoom=1 -> 1px = 1px do mapa 32K
       this.prefs = {};
-      this.worldBounds = { min_x: -10500, max_x: 10500, min_y: -10500, max_y: 10500 };
+      this.worldBounds = { min_x: -8192, max_x: 8192, min_y: -8192, max_y: 8192 };
 
       this.mapData = null;
       this.progress = { collected_items: [], completed_pois: [], discovered_provinces: [], defeated_bosses: [] };
@@ -133,7 +133,7 @@ window.GhostMap = (() => {
     }
 
     metersToPixels(meters) {
-      const span = Math.max(1000, (this.worldBounds.max_x - this.worldBounds.min_x) || 21000);
+      const span = Math.max(1000, (this.worldBounds.max_x - this.worldBounds.min_x) || 16384);
       return (meters / span) * WORLD_PX * this.zoom;
     }
 
@@ -254,7 +254,7 @@ window.GhostMap = (() => {
         const img = new Image();
         rec = { img, loaded: false };
         img.onload = () => { rec.loaded = true; this._needsRedraw = true; };
-        img.src = `/api/icon/${name}.png?v=2`;
+        img.src = `/api/icon/${name}.png?v=3`;
         this.iconCache.set(name, rec);
       }
       return rec;
@@ -291,7 +291,7 @@ window.GhostMap = (() => {
       const discProvs = new Set(this.progress.discovered_provinces || []);
       const player = this.liveState && this.liveState.player;
       const rad = Number(this.prefs.assistRadius || 350);
-      const span = Math.max(1000, (this.worldBounds.max_x - this.worldBounds.min_x) || 21000);
+      const span = Math.max(1000, (this.worldBounds.max_x - this.worldBounds.min_x) || 16384);
 
       const out = [];
       for (const poi of this.mapData.pois) {
@@ -378,18 +378,51 @@ window.GhostMap = (() => {
         }
       }
 
-      // Nomes das 21 províncias
+      // Nomes das 21 províncias (com pílula verde em destaque nas concluídas)
       if (this.prefs.showProvinces !== false && this.mapData && this.mapData.provinces) {
+        const defeatedBosses = new Set(this.progress.defeated_bosses || []);
         ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
         ctx.font = "700 11px Segoe UI, sans-serif";
         for (const p of this.mapData.provinces) {
           const pt = this.uvToScreen(p.u, p.v);
           if (pt.x < -80 || pt.x > w + 80 || pt.y < -30 || pt.y > h + 30) continue;
-          ctx.fillStyle = "rgba(4, 7, 11, 0.72)";
-          ctx.fillText(p.name.toUpperCase(), pt.x + 1, pt.y + 1);
-          ctx.fillStyle = "rgba(186, 230, 253, 0.86)";
-          ctx.fillText(p.name.toUpperCase(), pt.x, pt.y);
+          const isDoneProv = defeatedBosses.has(p.id);
+          const label = isDoneProv ? `✔ ${p.name.toUpperCase()}` : p.name.toUpperCase();
+          if (isDoneProv) {
+            const tw = ctx.measureText(label).width;
+            const pw = tw + 16;
+            const ph = 20;
+            const rx = pt.x - pw * 0.5;
+            const ry = pt.y - ph * 0.5;
+            const rad = 10;
+            ctx.save();
+            ctx.shadowColor = "rgba(34, 197, 94, 0.55)";
+            ctx.shadowBlur = 10;
+            ctx.beginPath();
+            ctx.moveTo(rx + rad, ry);
+            ctx.arcTo(rx + pw, ry, rx + pw, ry + ph, rad);
+            ctx.arcTo(rx + pw, ry + ph, rx, ry + ph, rad);
+            ctx.arcTo(rx, ry + ph, rx, ry, rad);
+            ctx.arcTo(rx, ry, rx + pw, ry, rad);
+            ctx.closePath();
+            ctx.fillStyle = "rgba(10, 46, 26, 0.90)";
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = "#22c55e";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.fillStyle = "#86efac";
+            ctx.fillText(label, pt.x, pt.y + 0.5);
+            ctx.restore();
+          } else {
+            ctx.fillStyle = "rgba(4, 7, 11, 0.72)";
+            ctx.fillText(label, pt.x + 1, pt.y + 1);
+            ctx.fillStyle = "rgba(186, 230, 253, 0.86)";
+            ctx.fillText(label, pt.x, pt.y);
+          }
         }
+        ctx.textBaseline = "alphabetic";
       }
 
       // POIs do catálogo
@@ -400,7 +433,7 @@ window.GhostMap = (() => {
         const isHl = this.highlightedItemId && poi.item_id === this.highlightedItemId;
         const isSel = this.selectedPoi && this.selectedPoi.id === poi.id;
         ctx.save();
-        if (poi.done) ctx.globalAlpha = 0.42;
+        if (poi.done) ctx.globalAlpha = 0.95;
         if (isHl || isSel) {
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, 17, 0, Math.PI * 2);
@@ -408,21 +441,48 @@ window.GhostMap = (() => {
           ctx.lineWidth = 2.5;
           ctx.stroke();
         }
+        if (poi.done) {
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 14, 0, Math.PI * 2);
+          ctx.strokeStyle = "#22c55e";
+          ctx.lineWidth = 2.8;
+          ctx.stroke();
+        }
         const ic = this._getIcon(poi.cat);
         if (ic.loaded) {
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, 12.5, 0, Math.PI * 2);
-          ctx.fillStyle = "rgba(8, 13, 20, 0.8)";
+          ctx.fillStyle = poi.done ? "rgba(20, 83, 45, 0.88)" : "rgba(8, 13, 20, 0.8)";
           ctx.fill();
-          ctx.strokeStyle = "rgba(148, 163, 184, 0.35)";
-          ctx.lineWidth = 1;
+          ctx.strokeStyle = poi.done ? "#22c55e" : "rgba(148, 163, 184, 0.35)";
+          ctx.lineWidth = poi.done ? 1.5 : 1;
           ctx.stroke();
           ctx.drawImage(ic.img, pt.x - 11, pt.y - 11, 22, 22);
         } else {
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
-          ctx.fillStyle = "#38bdf8";
+          ctx.fillStyle = poi.done ? "#22c55e" : "#38bdf8";
           ctx.fill();
+        }
+        if (poi.done) {
+          const bx = pt.x + 9;
+          const by = pt.y - 9;
+          ctx.beginPath();
+          ctx.arc(bx, by, 6.5, 0, Math.PI * 2);
+          ctx.fillStyle = "#16a34a";
+          ctx.fill();
+          ctx.strokeStyle = "#ecfdf5";
+          ctx.lineWidth = 1.4;
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(bx - 3.2, by + 0.2);
+          ctx.lineTo(bx - 0.8, by + 2.6);
+          ctx.lineTo(bx + 3.4, by - 2.4);
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 1.7;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          ctx.stroke();
         }
         ctx.restore();
       }
@@ -477,17 +537,26 @@ window.GhostMap = (() => {
       const tac = live.tactical || {};
       const player = live.player;
 
-      // Trilha da sessão
-      if (this.prefs.showTrail !== false && Array.isArray(live.trail) && live.trail.length > 1) {
+      // Trilha da sessão (desativada por padrão e com quebra limpa em teleporte / loading)
+      if (Boolean(this.prefs.showTrail) && Array.isArray(live.trail) && live.trail.length > 1) {
         ctx.save();
         ctx.beginPath();
-        live.trail.forEach((pt, idx) => {
+        let prev = null;
+        for (let idx = 0; idx < live.trail.length; idx++) {
+          const pt = live.trail[idx];
           const s = this.uvToScreen(pt.u, pt.v);
-          if (idx === 0) ctx.moveTo(s.x, s.y);
-          else ctx.lineTo(s.x, s.y);
-        });
-        ctx.strokeStyle = "rgba(56, 189, 248, 0.55)";
-        ctx.lineWidth = 2;
+          const isJump = !prev || Boolean(pt.brk) || Math.hypot(pt.u - prev.u, pt.v - prev.v) > 0.01;
+          if (idx === 0 || isJump) {
+            ctx.moveTo(s.x, s.y);
+          } else {
+            ctx.lineTo(s.x, s.y);
+          }
+          prev = pt;
+        }
+        ctx.strokeStyle = "rgba(56, 189, 248, 0.68)";
+        ctx.lineWidth = 2.2;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
         ctx.stroke();
         ctx.restore();
       }

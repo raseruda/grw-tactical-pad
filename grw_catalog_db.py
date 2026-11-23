@@ -48,6 +48,30 @@ BOSS_REWARD_PROVINCE_MAP: dict[str, str] = {
     "wp_elobsequio": "barvechos",
 }
 
+ANVIL_PROVINCE_SYNC: dict[str, dict[str, str | None]] = {
+    "itacua": {"root": "Itacua-SEC_11", "prefix": "SEC_11", "boss_mission": "SEC_11_M040_HuntDownTorturers"},
+    "ocoro": {"root": "Ocoro-PRO_12", "prefix": "PRO_12", "boss_mission": "PRO_12_M070_Neutralize_ElEmisario"},
+    "agua_verde": {"root": "AguaVerde-INF_06", "prefix": "INF_06", "boss_mission": "INF_06_M060_Boss"},
+    "barvechos": {"root": "Barvechos-SMU_21", "prefix": "SMU_21", "boss_mission": "SMU_21_M050_Boss"},
+    "mojocoyo": {"root": "Mojocoyo-SMU_22", "prefix": "SMU_22", "boss_mission": "SMU_22_M020_Boss"},
+    "san_mateo": {"root": "SanMateo-SEC_05", "prefix": "SEC_05", "boss_mission": "SEC_05_M050_BlackstonesRatio"},
+    "tabacal": {"root": "Tabacal-PRO_02", "prefix": "PRO_02", "boss_mission": "PRO_02_M040_MadreCoca"},
+    "espiritu_santo": {"root": "EspirituSanto-INF_04", "prefix": "INF_04", "boss_mission": "INF_04_M040_Extract_La_Santera"},
+    "monte_puncu": {"root": None, "prefix": "MS09", "boss_mission": None},
+    "villa_verde": {"root": "VillaVerde-PRO_09", "prefix": "PRO_09", "boss_mission": "PRO_09_M040_ExtractElWey"},
+    "caimanes": {"root": "Caimanes-SMU_13", "prefix": "SMU_13", "boss_mission": "SMU_13_M040_UnderTheRadar"},
+    "la_cruz": {"root": "LaCruz", "prefix": "MS08", "boss_mission": "MS08_ElBoquita"},
+    "libertad": {"root": "Libertad-PRO_20", "prefix": "PRO_20", "boss_mission": "PRO_20_M020_Extract_Boss"},
+    "flor_de_oro": {"root": "FlorDeOro-SEC_19", "prefix": "SEC_19", "boss_mission": "SEC_19_M060_GeneralBaroExtract"},
+    "pucara": {"root": "Pucara-INF_15", "prefix": "INF_15", "boss_mission": "INF_15_M040_InterrogateDJPerico"},
+    "remanzo": {"root": "Remanzo-SMU_23", "prefix": "SMU_23", "boss_mission": "SMU_23_M050_Kill_ElGato"},
+    "malca": {"root": "Malca-INF_18", "prefix": "INF_18", "boss_mission": "INF_18_M030_LastSong"},
+    "montuyoc": {"root": "Montuyoc-SEC_10", "prefix": "SEC_10", "boss_mission": "SEC_10_M030_CarlBookhart"},
+    "inca_camina": {"root": "IncaCamina-ULC1-SMU_14", "prefix": "SMU_14", "boss_mission": "SMU_14_M010_KillPeruvianNegotiator"},
+    "media_luna": {"root": "MediaLuna-ULC2-SEC_01", "prefix": "SEC_01", "boss_mission": "SEC_01_M040_BringingDownTheHouse"},
+    "koani": {"root": "Koani-SMU_25", "prefix": "SMU_25", "boss_mission": "SMU_25_M040_BostonReed"},
+}
+
 CARTEL_WINGS: list[dict[str, Any]] = [
     {
         "id": "security",
@@ -1119,3 +1143,229 @@ def build_static_databases(lang: str = "pt-BR") -> tuple[dict[str, Any], dict[st
         "provinces": provs_out,
     }
     return map_data, catalog_data, cartel_data
+
+
+_WEAPON_GBS_PREFIXES = ("ASR_", "SMG_", "LMG_", "SNR_", "SNP_", "STG_", "SHG_", "HDG_", "CMG_", "CRB_", "LEG_")
+
+_GBS_WEAPON_EXACT_MAP: dict[str, str] = {
+    "ASR_P416": "wp_p416",
+    "ASR_M4A1": "wp_m4a1",
+    "ASR_ACR": "wp_acr",
+    "ASR_MK17": "wp_mk17",
+    "ASR_TAR21": "wp_tar21",
+    "ASR_AUG-A3": "wp_auga3",
+    "ASR_SIG556": "wp_556xi",
+    "ASR_AK47": "wp_ak47",
+    "ASR_AK47_LEG_HIS": "wp_ak47",
+    "ASR_AK47_LEG_HERS": "wp_ak47",
+    "ASR_AK-12": "wp_ak12",
+    "ASR_R5GP": "wp_r5rgp",
+    "ASR_FAMAS": "wp_g2",
+    "ASR_805 BREN A2": "wp_805bren",
+    "ASR_L85A2": "wp_l85a2",
+    "ASR_SR3M": "wp_sr3m",
+    "LEG_ASR_AK-12_RITMO": "wp_ritmo",
+    "SNR_M40A5": "wp_m40a5",
+    "SNR_HTI": "wp_hti",
+    "SNR_MSR": "wp_msr",
+    "SNR_L115A3": "wp_l115a3",
+    "SNR_MK14": "wp_mk14",
+    "SNR_G28": "wp_g28",
+    "SNR_SR25": "wp_sr25",
+    "SNR_DRAGUNOV": "wp_svd",
+    "SNR_SRSA1": "wp_srsa1",
+    "SNR_M1891": "wp_m1891",
+    "SNR_DSR1": "wp_sr1",
+    "SMG_MP5": "wp_mp5",
+    "SMG_MP7": "wp_mp7",
+    "SMG_Vector": "wp_vector",
+    "SMG_P90": "wp_p90",
+    "SMG_SCPN-EVO3": "wp_scorpion",
+    "SMG_PP19": "wp_pp19",
+    "SMG_PP19_Executioner": "wp_pp19",
+    "LEG_SMG_PP19_RESIDUOS": "wp_pp19",
+    "SMG_KAC-PDW": "wp_sr635",
+    "SMG_KAC-PDW_SR635_Apparition": "wp_sr635",
+    "SMG_PSG": "wp_psg",
+    "SMG_VITYAZ": "wp_9x19vsn",
+    "SMG_STERLING": "wp_9mmc1",
+    "SMG_MPX": "wp_mpx",
+    "CMG_MAC11": "wp_smg11",
+    "LMG_MK48": "wp_mk48",
+    "LMG_STONER": "wp_stoner",
+    "LMG_STONER_Armored": "wp_stoner",
+    "LMG_KRYTAC": "wp_mk249",
+    "LMG_KRYTAC_EPIC_PATON": "wp_mk249",
+    "LMG_Pecheneg": "wp_6p41",
+    "LMG_T95": "wp_type95",
+    "LMG_HK121": "wp_mg121",
+    "LEG_LMG_KRYTAC_LLAMATIVO": "wp_llamativo",
+    "STG_SuperShorty": "wp_supershorty",
+    "STG_SuperShorty_Legacy": "wp_supershorty",
+    "STG_SAIGA12": "wp_sasg12",
+    "STG_SAIGA12_LEG_SILENCIO": "wp_sasg12",
+    "STG_SPAS-12": "wp_spas12",
+    "STG_M1014": "wp_m1014",
+    "LEG_STG_SPAS-12_OBSEQUIO": "wp_elobsequio",
+    "HDG_P45T": "wp_p45t",
+    "HDG_P12": "wp_p12",
+    "HDG_M9": "wp_m9",
+    "HDG_Five-Seven": "wp_57usg",
+    "HDG_M1911": "wp_m1911",
+    "HDG_DEAGLE": "wp_d50",
+    "HDG_P227": "wp_p227",
+    "LEG_HDG_57_LADYKILLER": "wp_ladykiller",
+    "CMG_SKORPION": "wp_skorpion",
+}
+
+_CLS_ALIASES = {
+    "ar": ("ASR", "CAR", "AR"),
+    "smg": ("SMG", "CMG"),
+    "lmg": ("LMG",),
+    "sniper": ("SNP", "SNR"),
+    "shotgun": ("STG", "SHG"),
+    "pistol": ("HDG", "HND"),
+}
+
+
+def match_gbs_weapon_ids(unlocked_names: set[str]) -> set[str]:
+    """Mapeia nomes internos GBS Table 2 de armas para IDs de `WEAPONS_DB` sem falso-positivo em acessórios."""
+    valid_ids = {w["id"] for w in WEAPONS_DB}
+    found: set[str] = set()
+    norm_exact = {k.strip().upper(): v for k, v in _GBS_WEAPON_EXACT_MAP.items()}
+    for raw_name in unlocked_names:
+        name = raw_name.strip()
+        if not name.startswith(_WEAPON_GBS_PREFIXES):
+            continue
+        if "_PVP_" in name.upper():
+            continue
+        wid = norm_exact.get(name.upper())
+        if wid and wid in valid_ids:
+            found.add(wid)
+    return found
+
+
+def match_gbs_attachment_ids(unlocked_names: set[str]) -> set[str]:
+    """Mapeia nomes internos GBS Table 2 de acessórios para IDs de `ATTACHMENTS_DB`."""
+    att_tokens = [nm.strip() for nm in unlocked_names if not nm.strip().startswith(_WEAPON_GBS_PREFIXES)]
+    if not att_tokens:
+        return set()
+
+    upper_tokens = [t.upper() for t in att_tokens]
+    found: set[str] = set()
+
+    def _has_cls(tok: str, classes: list[str]) -> bool:
+        if "_BASE" in tok:
+            return True
+        for c in classes:
+            for al in _CLS_ALIASES.get(c, ()):
+                if f"_{al}_" in tok or tok.endswith(f"_{al}"):
+                    return True
+        return False
+
+    for a in ATTACHMENTS_DB:
+        aid = a["id"]
+        slot = a["slot"]
+        classes = a.get("compatible_classes") or []
+        matched = False
+
+        if aid == "att_panoramic":
+            matched = any(t.startswith("AC11704_") for t in upper_tokens)
+        elif aid == "att_pkas":
+            matched = any(t.startswith("PKAS_") for t in upper_tokens)
+        elif aid == "att_compm4":
+            matched = any(t.startswith("COMPM4_") for t in upper_tokens)
+        elif aid == "att_ar_micro_t1":
+            matched = any(t.startswith("MICROT1_") and not t.startswith("MICROT1XG33") for t in upper_tokens)
+        elif aid == "att_micro_g33":
+            matched = any(t.startswith("MICROT1XG33") or "MICROT1_WITHMAGNIFIER" in t for t in upper_tokens)
+        elif aid == "att_exps3":
+            matched = any(t.startswith("EXPS3_") and not t.startswith("EXPS3XG33") for t in upper_tokens)
+        elif aid == "att_exps_g33":
+            matched = any(t.startswith("EXPS3XG33") for t in upper_tokens)
+        elif aid == "att_pks07":
+            matched = any(t.startswith("PKS07_") for t in upper_tokens)
+        elif aid == "att_ta31h":
+            matched = any(t.startswith("TA31H_") for t in upper_tokens)
+        elif aid == "att_tars101":
+            matched = any(t.startswith("TARS101_") for t in upper_tokens)
+        elif aid == "att_t5xi":
+            matched = any(t.startswith("T5XI_") for t in upper_tokens)
+        elif aid == "att_posp":
+            matched = any(t.startswith("POSP_") for t in upper_tokens)
+        elif aid == "att_g28_scope":
+            matched = any(t.startswith("G28_") for t in upper_tokens)
+        elif aid == "att_digital_scope":
+            matched = any("SPECTER_" in t for t in upper_tokens)
+        elif aid == "att_ar_long_barrel":
+            matched = any(t.startswith("BARRELATTACHMENT_LONGBARREL_ASR_") for t in upper_tokens)
+        elif aid == "att_ar_short_barrel":
+            matched = any(t.startswith("BARRELATTACHMENT_SHORTBARREL_ASR_") for t in upper_tokens)
+        elif aid == "att_smg_short":
+            matched = any(t.startswith("BARRELATTACHMENT_SHORTBARREL_SMG_") for t in upper_tokens)
+        elif aid == "att_sg_long_barrel":
+            matched = any(t.startswith("BARRELATTACHMENT_LONGBARREL_STG_") for t in upper_tokens)
+        elif aid == "att_lmg_long":
+            matched = any(t.startswith("BARRELATTACHMENT_LONGBARREL_LMG_") for t in upper_tokens)
+        elif aid == "att_sr_long_barrel":
+            matched = any(t.startswith(("BARRELATTACHMENT_LONGBARREL_SNP_", "BARRELATTACHMENT_LONGBARREL_SNR_")) for t in upper_tokens)
+        elif aid in ("att_ar_atpial", "att_smg_atpial", "att_lmg_atpial", "att_sr_atpial", "att_hg_atpial"):
+            matched = any(t.startswith("RAILATTACHMENT_ATPIAL") and _has_cls(t, classes) for t in upper_tokens)
+        elif aid in ("att_ar_3dot", "att_smg_3dot", "att_lmg_3dot", "att_sr_3dot", "att_hg_3dot"):
+            matched = any(
+                (t.startswith(("RAILATTACHMENT_PISTOLLASER", "UNDERBARRELATTACHMENT_PISTOLLASER")) or "3DOT" in t)
+                and _has_cls(t, classes)
+                for t in upper_tokens
+            )
+        elif aid in ("att_ar_rangefinder", "att_smg_rangefinder", "att_sr_rangefinder"):
+            matched = any(t.startswith("RAILATTACHMENT_RANGEFINDER") and _has_cls(t, classes) for t in upper_tokens)
+        elif aid in ("att_ar_folded", "att_smg_folded", "att_lmg_folded"):
+            matched = any(t.startswith("STOCK_FOLDED") and _has_cls(t, classes) for t in upper_tokens)
+        elif aid in ("att_ar_comp_stock", "att_sr_comp_stock", "att_sr_comp_stock2"):
+            matched = any(t.startswith("STOCK_ALT") and _has_cls(t, classes) for t in upper_tokens)
+        elif aid == "att_fg_v2":
+            matched = any("FOREGRIP_TYPE1_" in t for t in upper_tokens)
+        elif aid in ("att_fg_v4", "att_vv_grip"):
+            matched = any("FOREGRIP_TYPE2_" in t or "FOREGRIP_TYPE3_" in t or "FOREGRIP_V" in t for t in upper_tokens)
+        elif aid in ("att_afg", "att_shift_grip"):
+            matched = any("ANGLEDFOREGRIP" in t for t in upper_tokens)
+        elif aid == "att_m203":
+            matched = any("UBGL_SMALL" in t or "M203" in t for t in upper_tokens)
+        elif aid == "att_std_gl":
+            matched = any("UBGL" in t and "SMOKE" not in t and "SMALL" not in t for t in upper_tokens)
+        elif aid == "att_ar_flash_hider":
+            matched = any(t.startswith("MUZZLE HIDDER") and _has_cls(t, ["ar"]) for t in upper_tokens)
+        elif aid in ("att_ar_comp_v2", "att_smg_comp", "att_lmg_comp", "att_lmg_comp_v2", "att_sr_comp", "att_sr_comp_v2", "att_sg_comp"):
+            matched = any(t.startswith("COMPENSATOR") and _has_cls(t, classes) for t in upper_tokens)
+        elif aid in ("att_ar_suppressor", "att_lmg_suppressor", "att_sr_suppressor", "att_sg_suppressor"):
+            matched = any(
+                (t.startswith(("WPN_AT_MUZZLE_SUPPRESSOR", "MUZZLE_SIL")) and _has_cls(t, classes))
+                for t in upper_tokens
+            )
+        elif aid == "att_ar_stanag30":
+            matched = any("MAGAZINE_ASR_XTD_STANAG" in t for t in upper_tokens)
+        elif aid == "att_ar_ext30":
+            matched = any("MAGAZINE_ASR_XTD" in t and "STANAG" not in t for t in upper_tokens)
+        elif aid == "att_ar_762_30":
+            matched = any("MAGAZINE_ASR_XTD_AK" in t or "MAGAZINE_ASR_XTD_762" in t for t in upper_tokens)
+        elif aid == "att_ar_mag50":
+            matched = any("MAGAZINE_ASR" in t and ("DRM" in t or "50" in t or "BIG" in t) for t in upper_tokens)
+        elif aid == "att_hg_ext15":
+            matched = any(t.startswith("MAGAZINE_HDG_XTD") and ("M9" in t or "BERETTA" in t or "15" in t) for t in upper_tokens)
+        elif aid == "att_pistol_extmag":
+            matched = any(t.startswith("MAGAZINE_HDG_XTD") and ("FNP" in t or "45" in t or "57" in t or "30" in t or "BASE" in t) for t in upper_tokens)
+        elif aid == "att_smg_ext30":
+            matched = any(t.startswith("MAGAZINE_SMG_XTD") for t in upper_tokens)
+        elif aid in ("att_sr_ext10", "att_sr_ext30"):
+            matched = any(t.startswith(("MAGAZINE_SNP_XTD", "MAGAZINE_SNR_XTD")) for t in upper_tokens)
+        elif aid == "att_lmg_ext200":
+            matched = any(t.startswith("MAGAZINE_LMG_XTD") for t in upper_tokens)
+        elif aid == "att_sg_ext_tube":
+            matched = any(t.startswith(("MAGAZINE_STG_XTD", "MAGAZINE_SHG_XTD")) for t in upper_tokens)
+        else:
+            matched = False
+
+        if matched and slot:
+            found.add(aid)
+    return found
+

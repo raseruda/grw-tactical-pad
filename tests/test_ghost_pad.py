@@ -384,6 +384,7 @@ class TestServerAndPersistence(unittest.TestCase):
         from server import create_server
 
         orig_settings = config.SETTINGS_PATH.read_bytes() if config.SETTINGS_PATH.is_file() else None
+        orig_progress = config.PROGRESS_PATH.read_bytes() if config.PROGRESS_PATH.is_file() else None
         srv, runtime = create_server(game_dir=WILDLANDS_DIR, port=0, lan=False, allow_takeover=True)
         th = threading.Thread(target=srv.serve_forever, daemon=True)
         th.start()
@@ -474,6 +475,10 @@ class TestServerAndPersistence(unittest.TestCase):
                 config.SETTINGS_PATH.write_bytes(orig_settings)
             elif config.SETTINGS_PATH.is_file():
                 config.SETTINGS_PATH.unlink()
+            if orig_progress is not None:
+                config.PROGRESS_PATH.write_bytes(orig_progress)
+            elif config.PROGRESS_PATH.is_file():
+                config.PROGRESS_PATH.unlink()
 
     def test_shutdown_rejected_when_embedded(self) -> None:
         import threading
@@ -495,6 +500,305 @@ class TestServerAndPersistence(unittest.TestCase):
             runtime.close()
             srv.shutdown()
             srv.server_close()
+
+
+USER_SAVE_DIR = (
+    Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+    / "Ubisoft"
+    / "Ubisoft Game Launcher"
+    / "savegames"
+    / "1d0734dc-4bc2-4c19-990a-a7d16dda7b0e"
+    / "3559"
+)
+USER_SAVE_4 = USER_SAVE_DIR / "4.save"
+
+
+class TestBugfixesV120(unittest.TestCase):
+    def test_texture_map_vertical_orientation(self) -> None:
+        import struct
+        name = b"TestIcon"
+        hdr = bytearray(12)
+        struct.pack_into("<I", hdr, 8, len(name))
+        prefix = bytes(hdr) + name + b"\x00" + b"\x00" * 12
+        meta = bytearray(112)
+        struct.pack_into("<4I", meta, 1, 4, 4, 1, 0)  # width=4, height=4, depth=1, fmt=0 (BGRA)
+        # Bottom-up rows stored in Anvil TextureMap: top buffer rows = red BGRA, bottom buffer rows = blue BGRA
+        red_bgra = bytes([0, 0, 255, 255])
+        blue_bgra = bytes([255, 0, 0, 255])
+        pixels = (red_bgra * 8) + (blue_bgra * 8)
+        im = decode_anvil_texture_map([prefix + bytes(meta) + pixels])
+        self.assertIsNotNone(im)
+        self.assertEqual(im.size, (4, 4))
+        # Após espelhamento vertical, y=0 fica azul e y=3 fica vermelho
+        self.assertEqual(im.getpixel((0, 0)), (0, 0, 255, 255))
+        self.assertEqual(im.getpixel((0, 3)), (255, 0, 0, 255))
+
+    def test_world_bounds_calibration_and_v3_migration(self) -> None:
+        wb = config.DEFAULT_SETTINGS["world_bounds"]
+        self.assertEqual(wb["min_x"], -8192.0)
+        self.assertEqual(wb["max_x"], 8192.0)
+        self.assertEqual(wb["min_y"], -8192.0)
+        self.assertEqual(wb["max_y"], 8192.0)
+        self.assertFalse(config.DEFAULT_UI_PREFS["showTrail"])
+
+        reader = GRWLiveReader()
+        u, v = reader.world_to_uv(5570.0, 5719.0)
+        self.assertTrue(0.83 < u < 0.85, f"Esperado NE Espíritu Santo, veio u={u}")
+        self.assertTrue(0.14 < v < 0.16, f"Esperado v~0.151, veio v={v}")
+
+        # Simula settings.json antigo (-10500..10500 e showTrail=True sem prefs_migrated_v3)
+        old_cfg = {
+            "lang": "pt-BR",
+            "world_bounds": {"min_x": -10500.0, "max_x": 10500.0, "min_y": -10500.0, "max_y": 10500.0, "invert_y": True},
+            "ui_prefs": {"showTrail": True, "followPlayer": False},
+        }
+        migrated = config._merge_settings_defaults(old_cfg)
+        self.assertEqual(migrated["world_bounds"]["min_x"], -8192.0)
+        self.assertEqual(migrated["world_bounds"]["max_x"], 8192.0)
+        self.assertTrue(migrated.get("prefs_migrated_v3"))
+        self.assertFalse(migrated["ui_prefs"]["showTrail"])
+        self.assertFalse(migrated["ui_prefs"]["followPlayer"])
+
+    def test_no_fake_coop_ghosts_and_ally_cap(self) -> None:
+        import ctypes
+        from grw_memory import TELEMETRY_MAGIC
+
+        now_ms = int(ctypes.windll.kernel32.GetTickCount64())
+        st = GRWTelemetryState()
+        st.magic = TELEMETRY_MAGIC
+        st.version = TELEMETRY_VERSION
+        st.hooks_mask = 1
+        st.build_matched = 1
+        st.cam_valid = 1
+        st.cam_last_ms = now_ms
+        st.cam_fwd[1] = 1.0
+        st.local_player_entity = 0x1000
+        st.local_player_skel = 0x2000
+
+        shared_vtable = 0x7FF000010000
+        # Slot 0: Player
+        p = st.chars[0]
+        p.entity_ptr = 0x1000
+        p.skel_ptr = 0x2000
+        p.entity_vtable = shared_vtable
+        p.rig_ptr = 0xAAAA
+        p.valid_flags = 3
+        p.last_seen_ms = now_ms
+        p.faction_raw = 2  # ghost
+        p.alert_raw = 1
+        p.root_pos[0], p.root_pos[1], p.root_pos[2] = 0.0, 0.0, 100.0
+        p.head_pos[0], p.head_pos[1], p.head_pos[2] = 0.0, 0.0, 101.6
+
+        # Slots 1..40: 40 NPCs compartilhando o MESMO entity_vtable do player + Santa Blanca / civis + distantes
+        for idx in range(1, 41):
+            c = st.chars[idx]
+            c.entity_ptr = 0x3000 + idx
+            c.skel_ptr = 0x4000 + idx
+            c.entity_vtable = shared_vtable
+            c.rig_ptr = 0xAAAA if idx <= 6 else 0xBBBB
+            c.valid_flags = 3
+            c.last_seen_ms = now_ms
+            c.bone_count = 300
+            c.alert_raw = 1
+            c.root_pos[0], c.root_pos[1], c.root_pos[2] = float(idx * 5), 10.0, 100.0
+            c.head_pos[0], c.head_pos[1], c.head_pos[2] = float(idx * 5), 10.0, 101.6
+            if idx <= 5:
+                c.faction_raw = 2  # 5 ghosts candidatos -> deve limitar em no máximo 3!
+            elif idx <= 25:
+                c.faction_raw = 3  # Santa Blanca
+            else:
+                c.faction_raw = 0  # Civil / neutro
+
+        reader = GRWLiveReader(telemetry_ptr=ctypes.addressof(st))
+        frame = reader.read_live_frame()
+        self.assertEqual(frame["mode"], "live")
+        self.assertLessEqual(len(frame["allies"]), 3)
+        self.assertGreaterEqual(len(frame["enemies"]), 20)
+        self.assertEqual(len([a for a in frame["allies"] if a["type"] == "coop"]), 0)
+
+    def test_trail_arming_and_teleport_break(self) -> None:
+        import ctypes
+        from grw_memory import TELEMETRY_MAGIC
+
+        now_ms = int(ctypes.windll.kernel32.GetTickCount64())
+        st = GRWTelemetryState()
+        st.magic = TELEMETRY_MAGIC
+        st.version = TELEMETRY_VERSION
+        st.hooks_mask = 1
+        st.build_matched = 1
+        st.cam_valid = 1
+        st.cam_last_ms = now_ms
+        st.cam_fwd[1] = 1.0
+        st.local_player_entity = 0x1000
+        st.local_player_skel = 0x2000
+
+        p = st.chars[0]
+        p.entity_ptr = 0x1000
+        p.skel_ptr = 0x2000
+        p.valid_flags = 1
+        p.last_seen_ms = now_ms
+        p.faction_raw = 3
+
+        reader = GRWLiveReader(telemetry_ptr=ctypes.addressof(st))
+
+        # 1) Posições iniciais de carregamento não armam a trilha
+        for x in (100.0, 102.0):
+            p.root_pos[0], p.root_pos[1], p.root_pos[2] = x, 100.0, 50.0
+            p.head_pos[0], p.head_pos[1], p.head_pos[2] = x, 100.0, 51.6
+            fr = reader.read_live_frame()
+            self.assertEqual(len(fr["trail"]), 0)
+
+        # 2) Salto grande (>45m) de teleporte/fast travel NÃO grava traço cruzando o mapa
+        p.root_pos[0], p.root_pos[1], p.root_pos[2] = 500.0, 500.0, 50.0
+        p.head_pos[0], p.head_pos[1], p.head_pos[2] = 500.0, 500.0, 51.6
+        fr = reader.read_live_frame()
+        self.assertEqual(len(fr["trail"]), 0)
+
+        # 3) Após 3 passos firmes, a trilha arma e passa a gravar novos pontos a cada >= 6m
+        for dx in (504.0, 508.0, 512.0, 519.0, 526.0):
+            p.root_pos[0], p.root_pos[1], p.root_pos[2] = dx, 500.0, 50.0
+            p.head_pos[0], p.head_pos[1], p.head_pos[2] = dx, 500.0, 51.6
+            fr = reader.read_live_frame()
+        self.assertGreaterEqual(len(fr["trail"]), 2)
+
+        # 4) Novo teleporte grande marca "brk": True quando o jogador voltar a andar
+        p.root_pos[0], p.root_pos[1], p.root_pos[2] = -200.0, -200.0, 50.0
+        p.head_pos[0], p.head_pos[1], p.head_pos[2] = -200.0, -200.0, 51.6
+        reader.read_live_frame()
+        for dx in (-196.0, -192.0, -188.0, -181.0):
+            p.root_pos[0], p.root_pos[1], p.root_pos[2] = dx, -200.0, 50.0
+            p.head_pos[0], p.head_pos[1], p.head_pos[2] = dx, -200.0, 51.6
+            fr = reader.read_live_frame()
+        self.assertTrue(any(pt.get("brk") for pt in fr["trail"]))
+
+    def test_synthetic_encrypted_save_roundtrip_and_sync(self) -> None:
+        import struct
+        import grw_save_sync as gs
+
+        vid_prov = 0x79D290B79C
+        vid_boss = 0x79D290B7AA
+        vid_att_ak = 0x111122223333
+        vid_wp_tar = 0x111122224444
+        vid_wp_llam = 0x111122225555
+
+        # Chunk campanha 0x1FE25FCB
+        chunk_camp = (
+            struct.pack("<Q", vid_prov)
+            + b"\x00\x00\x1d\x00\x0b\x01"
+            + struct.pack("<I", 1)
+            + b"\x01"
+            + b"\x00" * 16
+            + struct.pack("<Q", vid_boss)
+            + b"\x19\x00\x0b"
+            + struct.pack("<I", 2)
+            + b"\x00" * 12
+        )
+        # Chunk inventário 0x8A9136AA
+        chunk_inv = (
+            b"\x00\x00\x12\x00\x0b"
+            + struct.pack("<Q", vid_att_ak)
+            + b"\x00" * 12
+            + struct.pack("<Q", vid_wp_tar)
+            + b"\x00" * 12
+            + struct.pack("<Q", vid_wp_llam)
+            + b"\x00" * 12
+        )
+
+        def _wrap_chunk(cid: int, data: bytes) -> bytes:
+            return (
+                struct.pack("<II", cid, len(data))
+                + gs.GRW_CHUNK_MAGIC_BYTES
+                + b"\x00" * 7
+                + struct.pack("<BIII", 0, len(data), len(data), 0)
+                + data
+            )
+
+        plaintext = _wrap_chunk(gs.CID_CAMPAIGN_PROGRESS, chunk_camp) + _wrap_chunk(gs.CID_INVENTORY_UNLOCKS, chunk_inv)
+        enc = gs.encrypt_grw_payload(plaintext, seed1=54321, seed2=98765, bsz=16)
+        # Simula cabeçalho Ubisoft de 552 bytes (.save)
+        header = struct.pack("<I", 548) + b"\x00" * 548
+        save_bytes = header + enc
+
+        with tempfile.TemporaryDirectory() as td:
+            tp = Path(td)
+            sf = tp / "slot_test.save"
+            sf.write_bytes(save_bytes)
+
+            sync = gs.AutoProgressSync(live_saves_dir=tp / "empty_live")
+            sync._forge_ids = {
+                "table1_missions": {str(vid_prov): "AguaVerde-INF_06", str(vid_boss): "INF_06_M060_Boss"},
+                "table2_items": {
+                    str(vid_att_ak): "BarrelAttachment_LongBarrel_ASR_AK47",
+                    str(vid_wp_tar): "ASR_TAR21",
+                    str(vid_wp_llam): "LEG_LMG_KRYTAC_LLAMATIVO",
+                },
+            }
+            sync._t1_missions = {vid_prov: "AguaVerde-INF_06", vid_boss: "INF_06_M060_Boss"}
+            sync._t1_lo4 = {
+                vid_prov & 0xFFFFFFFF: [(vid_prov, "AguaVerde-INF_06")],
+                vid_boss & 0xFFFFFFFF: [(vid_boss, "INF_06_M060_Boss")],
+            }
+            sync._t2_items = {
+                vid_att_ak: "BarrelAttachment_LongBarrel_ASR_AK47",
+                vid_wp_tar: "ASR_TAR21",
+                vid_wp_llam: "LEG_LMG_KRYTAC_LLAMATIVO",
+            }
+            sync._t2_lo4 = {}
+            for k, v in sync._t2_items.items():
+                sync._t2_lo4.setdefault(k & 0xFFFFFFFF, []).append((k, v))
+            m_pt, _, ct = build_static_databases("pt-BR")
+            sync._provinces = ct["provinces"]
+            sync._pois = m_pt["pois"]
+            sync._catalog_loaded = True
+
+            prog, changed = sync.sync_disk_saves({}, save_paths=[sf], force=True)
+            self.assertTrue(changed)
+            self.assertIn("agua_verde", prog["discovered_provinces"])
+            self.assertIn("agua_verde", prog["defeated_bosses"])
+            self.assertIn("att_ar_long_barrel", prog["collected_items"])
+            self.assertIn("wp_tar21", prog["collected_items"])
+            self.assertIn("wp_llamativo", prog["collected_items"])
+            self.assertNotIn("wp_ak47", prog["collected_items"])
+
+    @unittest.skipUnless(
+        USER_SAVE_4.is_file() and (WILDLANDS_DIR / "DataPC_patch_01.forge").is_file(),
+        "Saves locais Ubisoft / Wildlands ausentes",
+    )
+    def test_real_wildlands_saves_sync(self) -> None:
+        import grw_asset_builder as ab
+        import grw_save_sync as gs
+
+        with tempfile.TemporaryDirectory() as td:
+            tp = Path(td)
+            fa = ForgeArchive(WILDLANDS_DIR / "DataPC.forge")
+            fids = ab._build_forge_ids_index(fa, game_dir=WILDLANDS_DIR)
+            map_data, catalog_data, cartel_data = build_static_databases("pt-BR")
+
+            fjson = tp / "forge_ids.json"
+            cjson = tp / "cartel.json"
+            mjson = tp / "map_data.json"
+            kjson = tp / "catalog.json"
+            fjson.write_text(json.dumps(fids), encoding="utf-8")
+            cjson.write_text(json.dumps(cartel_data), encoding="utf-8")
+            mjson.write_text(json.dumps(map_data), encoding="utf-8")
+            kjson.write_text(json.dumps(catalog_data), encoding="utf-8")
+
+            old_paths = (gs.FORGE_IDS_PATH, gs.CARTEL_PATH, gs.MAP_DATA_PATH, gs.CATALOG_PATH)
+            gs.FORGE_IDS_PATH, gs.CARTEL_PATH, gs.MAP_DATA_PATH, gs.CATALOG_PATH = fjson, cjson, mjson, kjson
+            try:
+                sync = gs.AutoProgressSync(live_saves_dir=tp / "live", game_dir=WILDLANDS_DIR)
+                prog, changed = sync.sync_disk_saves({}, force=True)
+                self.assertTrue(changed)
+                for b in ("agua_verde", "ocoro", "itacua", "pucara", "malca"):
+                    self.assertIn(b, prog["defeated_bosses"])
+                self.assertIn("espiritu_santo", prog["discovered_provinces"])
+                self.assertNotIn("espiritu_santo", prog["defeated_bosses"])
+                for und in ("barvechos", "media_luna"):
+                    self.assertNotIn(und, prog["discovered_provinces"])
+                for item in ("wp_llamativo", "wp_sr3m", "att_panoramic"):
+                    self.assertIn(item, prog["collected_items"])
+            finally:
+                gs.FORGE_IDS_PATH, gs.CARTEL_PATH, gs.MAP_DATA_PATH, gs.CATALOG_PATH = old_paths
 
 
 if __name__ == "__main__":

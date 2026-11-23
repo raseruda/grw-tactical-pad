@@ -34,7 +34,7 @@ CATALOG_PATH = CACHE_DIR / "catalog.json"
 CARTEL_PATH = CACHE_DIR / "cartel.json"
 FORGE_IDS_PATH = CACHE_DIR / "forge_ids.json"
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 DEFAULT_PORT = 8766
 
 # Enum interno verificado em GRW.exe (0x3ab39c0 / 0x3b16480) para LAUNCHER_GAME_LANGUAGE
@@ -85,7 +85,7 @@ DEFAULT_UI_PREFS: dict[str, Any] = {
     "fogOfWar": False,
     "hideCompleted": False,
     "followPlayer": True,
-    "showTrail": True,
+    "showTrail": False,
     "showProvinces": True,
     "showCustom": True,
     "zoom": 0.28,
@@ -141,13 +141,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "lang": "auto",
     "port": DEFAULT_PORT,
     "world_bounds": {
-        # Initial calibrated Bolivia bounding box in meters (refined live at runtime)
-        "min_x": -10500.0,
-        "max_x": 10500.0,
-        "min_y": -10500.0,
-        "max_y": 10500.0,
+        # Exact AnvilNext 2.0 Bolivia world bounds in meters (16384m x 16384m = 2.0 px/m on 32K gr.wmap)
+        "min_x": -8192.0,
+        "max_x": 8192.0,
+        "min_y": -8192.0,
+        "max_y": 8192.0,
         "invert_y": True,
-        "calibrated": False,
+        "calibrated": True,
     },
     "ui_prefs": dict(DEFAULT_UI_PREFS),
 }
@@ -322,6 +322,7 @@ def _merge_settings_defaults(raw: dict[str, Any]) -> dict[str, Any]:
         "port": DEFAULT_PORT,
         "world_bounds": dict(DEFAULT_SETTINGS["world_bounds"]),
         "ui_prefs": dict(DEFAULT_UI_PREFS),
+        "prefs_migrated_v3": True,
     }
     for k, v in raw.items():
         if k == "ui_prefs" and isinstance(v, dict):
@@ -330,6 +331,16 @@ def _merge_settings_defaults(raw: dict[str, Any]) -> dict[str, Any]:
             merged["world_bounds"].update(v)
         else:
             merged[k] = v
+
+    # Migra world_bounds antigo (-10500..+10500 não calibrado) para o tamanho real [-8192..+8192]
+    wb = merged["world_bounds"]
+    if not wb.get("calibrated") or abs(float(wb.get("min_x", 0.0)) - (-10500.0)) < 1.0:
+        merged["world_bounds"] = dict(DEFAULT_SETTINGS["world_bounds"])
+
+    # Desativa trilha da sessão por padrão ao migrar instalações anteriores à v3
+    if not raw.get("prefs_migrated_v3"):
+        merged["ui_prefs"]["showTrail"] = False
+        merged["prefs_migrated_v3"] = True
     return merged
 
 
@@ -340,7 +351,15 @@ def load_settings() -> dict[str, Any]:
             try:
                 data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
-                    return _merge_settings_defaults(data)
+                    merged = _merge_settings_defaults(data)
+                    if (
+                        not data.get("prefs_migrated_v3")
+                        or not (data.get("world_bounds") or {}).get("calibrated")
+                    ):
+                        tmp = SETTINGS_PATH.with_suffix(".tmp")
+                        tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+                        tmp.replace(SETTINGS_PATH)
+                    return merged
             except (OSError, json.JSONDecodeError):
                 pass
         return _merge_settings_defaults({})
@@ -350,6 +369,7 @@ def save_settings(data: dict[str, Any]) -> dict[str, Any]:
     ensure_dirs()
     with _SETTINGS_LOCK:
         merged = _merge_settings_defaults(data)
+        merged["prefs_migrated_v3"] = True
         tmp = SETTINGS_PATH.with_suffix(".tmp")
         tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(SETTINGS_PATH)

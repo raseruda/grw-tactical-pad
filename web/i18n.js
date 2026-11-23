@@ -135,6 +135,8 @@ window.GhostI18n = (() => {
     "collected": "Coletado",
     "markCollected": "Marcar como coletado",
     "bossDefeated": "Buchón neutralizado",
+    "badge.collected": "COLETADO",
+    "badge.completed": "CONCLUÍDA",
   };
 
   const EN_US = {
@@ -272,6 +274,8 @@ window.GhostI18n = (() => {
     "collected": "Collected",
     "markCollected": "Mark as collected",
     "bossDefeated": "Buchón neutralized",
+    "badge.collected": "COLLECTED",
+    "badge.completed": "COMPLETED",
   };
 
   const ES_COMMON = {
@@ -333,6 +337,8 @@ window.GhostI18n = (() => {
     "cartel.medalsLabel": "Medallas",
     "settings.title": "Ajustes y Sistema",
     "settings.language": "Idioma",
+    "badge.collected": "RECOGIDO",
+    "badge.completed": "COMPLETADA",
     "settings.langAuto": "Auto (Idioma del juego)",
     "settings.gameDir": "Carpeta del juego",
     "settings.rebuild": "Reconstruir caché",

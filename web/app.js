@@ -635,7 +635,7 @@
         <label class="cat-item">
           <span class="cat-left">
             <input type="checkbox" class="chk-cat" data-cat="${c.id}" ${checked ? "checked" : ""} />
-            <img class="cat-icon" src="/api/icon/${c.id}.png?v=2" alt="" onerror="this.style.display='none'" />
+            <img class="cat-icon" src="/api/icon/${c.id}.png?v=3" alt="" onerror="this.style.display='none'" />
             <span>${c.name}</span>
           </span>
           <span class="cat-count">${counts[c.id] || 0}</span>
@@ -760,7 +760,7 @@
     const box = $("map-nearby");
     if (box.classList.contains("hidden") || !STATE.mapData) return;
     const p = (STATE.live && STATE.live.player) || { u: mapCtrl.camU, v: mapCtrl.camV };
-    const span = 21000;
+    const span = (mapCtrl && mapCtrl.worldBounds && (mapCtrl.worldBounds.max_x - mapCtrl.worldBounds.min_x)) || 16384;
     const rows = [];
     for (const en of ((STATE.live && STATE.live.enemies) || [])) {
       const d = Math.hypot((en.u - p.u) * span, (en.v - p.v) * span);
@@ -831,12 +831,13 @@
     $("wiki-grid").innerHTML = list.map((it) => {
       const isDone = done.has(it.id);
       const badge = it.kind === "weapon" ? it.weapon_class.toUpperCase() : it.kind === "attachment" ? it.slot.toUpperCase() : "MEDAL";
+      const doneTag = isDone ? `<span class="done-badge">✔ ${GhostI18n.t("badge.collected")}</span>` : "";
       const acoustic = it.kind === "weapon" ? `<span class="muted">🔇 ${it.noise_suppressed_m}m · 🔊 ${it.noise_unsuppressed_m}m</span>` : "";
       return `
         <div class="item-card ${isDone ? "collected" : ""}" data-id="${it.id}">
           <div class="card-title-row">
             <span>${it.name}</span>
-            <span class="tag">${badge}</span>
+            <span style="display:flex;align-items:center;gap:4px">${doneTag}<span class="tag">${badge}</span></span>
           </div>
           <div class="muted" style="font-size:11.5px">📍 ${it.province_name} — ${it.location}</div>
           ${acoustic}
@@ -1150,11 +1151,14 @@
       const isSel = STATE.prefs.selectedProvince === p.id;
       const skulls = "💀".repeat(p.skulls || 1);
       const st = _provinceProgressStats(p);
+      const isAllDone = st.total > 0 && st.completed.length >= st.total;
+      const isComplete = isDef || isAllDone;
+      const doneTag = isComplete ? `<span class="done-badge">✔ ${GhostI18n.t("badge.completed")}</span>` : "";
       return `
-        <div class="prov-card ${isDef ? "defeated" : ""} ${isSel ? "selected" : ""}" data-id="${p.id}">
+        <div class="prov-card ${isComplete ? "defeated" : ""} ${isAllDone ? "completed-all" : ""} ${isSel ? "selected" : ""}" data-id="${p.id}">
           <div class="card-title-row">
             <span style="font-size:15px">${p.name}</span>
-            <span>${skulls}</span>
+            <span style="display:flex;align-items:center;gap:5px">${doneTag}<span>${skulls}</span></span>
           </div>
           <div style="font-size:11.5px;color:${w.color || "#38bdf8"};font-weight:700">${w.name || p.wing} · Buchón: ${p.boss}</div>
           <div class="muted" style="font-size:11.5px">${p.biome} — ${p.desc}</div>

@@ -238,15 +238,20 @@ class GRWLiveReader:
             self._state = GRWTelemetryState.from_address(telemetry_ptr)
         self._lock = threading.RLock()
         self.world_bounds = dict(world_bounds or {
-            "min_x": -10500.0,
-            "max_x": 10500.0,
-            "min_y": -10500.0,
-            "max_y": 10500.0,
+            "min_x": -8192.0,
+            "max_x": 8192.0,
+            "min_y": -8192.0,
+            "max_y": 8192.0,
             "invert_y": True,
         })
         self.head_local_axis: tuple[float, float, float] = (0.0, 1.0, 0.0)
         self._trail: list[dict[str, Any]] = []
         self._last_trail_xy: tuple[float, float] | None = None
+        self._trail_armed: bool = False
+        self._trail_anchor_xy: tuple[float, float] | None = None
+        self._trail_prev_xy: tuple[float, float] | None = None
+        self._trail_move_steps: int = 0
+        self._trail_need_break: bool = True
         self._override_snapshot: dict[str, Any] | None = None
 
     def set_world_bounds(self, bounds: dict[str, Any]) -> None:
@@ -353,7 +358,6 @@ class GRWLiveReader:
         local_ent: int,
         local_skel: int,
         weapon_by_owner: dict[int, GRWWeaponSlot],
-        player_vtable: int,
         player_rig: int,
         module_base: int,
         coop_entities: set[int],
@@ -361,12 +365,13 @@ class GRWLiveReader:
         """Classifica entidade para Player / Ghost Co-op / Ghost IA / Santa Blanca / La Unidad / Rebelde / Civil."""
         if (local_ent and c.entity_ptr == local_ent) or (local_skel and c.skel_ptr == local_skel):
             return "player"
-        if int(c.is_player_comp) or (c.entity_ptr in coop_entities) or (player_vtable and c.entity_vtable == player_vtable):
-            return "ally_coop"
 
         fac_enum = EFACTION_MAP.get(int(c.faction_raw)) or EFACTION_MAP.get(int(c.faction_1e8))
-        is_ghost_rig = (player_rig and c.rig_ptr == player_rig) or c.bone_count >= 280
-        if fac_enum == "ghost" or is_ghost_rig:
+        # Nunca usa player_vtable para Co-op (todos os personagens Anvil compartilham a mesma vtable de Entity)
+        if (int(c.is_player_comp) != 0 or (c.entity_ptr in coop_entities)) and fac_enum in (None, "ghost"):
+            return "ally_coop"
+
+        if fac_enum == "ghost":
             return "ally_ai"
         if fac_enum == "civilian":
             return "civilian"
@@ -380,6 +385,9 @@ class GRWLiveReader:
         vt_rva = (int(c.npc_vtable) - module_base) if (c.npc_vtable and module_base and c.npc_vtable > module_base) else 0
         if vt_rva in CIVILIAN_NPC_VTABLE_RVAS:
             return "civilian"
+
+        if player_rig and c.rig_ptr == player_rig:
+            return "ally_ai_candidate"
 
         has_weapon = (c.entity_ptr in weapon_by_owner) or (c.skel_ptr in weapon_by_owner)
         if not has_weapon and c.bone_count < 140:
@@ -428,6 +436,12 @@ class GRWLiveReader:
         save_slot = int(st.last_save_slot)
 
         if not hooks_mask or not cam_fresh:
+            with self._lock:
+                self._trail_armed = False
+                self._trail_move_steps = 0
+                self._trail_need_break = True
+                self._trail_anchor_xy = None
+                self._trail_prev_xy = None
             return {
                 "mode": "title" if st.build_matched else "mismatch",
                 "status": "title" if st.build_matched else "build_mismatch",
@@ -463,6 +477,12 @@ class GRWLiveReader:
         coop_entities.discard(local_ent)
 
         if local_ent == 0 and local_skel == 0 and not weapon_by_owner:
+            with self._lock:
+                self._trail_armed = False
+                self._trail_move_steps = 0
+                self._trail_need_break = True
+                self._trail_anchor_xy = None
+                self._trail_prev_xy = None
             return {
                 "mode": "title",
                 "status": "ghost_room_or_menu",
@@ -527,11 +547,67 @@ class GRWLiveReader:
         player_yaw = _vec_to_yaw_deg(cam_fwd)
 
         with self._lock:
-            if self._last_trail_xy is None or math.hypot(px - self._last_trail_xy[0], py - self._last_trail_xy[1]) >= 8.0:
-                self._last_trail_xy = (px, py)
-                self._trail.append({"u": round(pu, 5), "v": round(pv, 5), "x": round(px, 1), "y": round(py, 1), "z": round(pz, 1)})
-                if len(self._trail) > 1500:
-                    self._trail.pop(0)
+            if player_slot is None or local_ent == 0 or (abs(px) < 10.0 and abs(py) < 10.0):
+                self._trail_armed = False
+                self._trail_move_steps = 0
+                self._trail_need_break = True
+                self._trail_anchor_xy = None
+                self._trail_prev_xy = None
+            else:
+                step_from_prev = (
+                    math.hypot(px - self._trail_prev_xy[0], py - self._trail_prev_xy[1])
+                    if self._trail_prev_xy is not None
+                    else 9999.0
+                )
+                if step_from_prev > 45.0:
+                    # Salto de carregamento / viagem rápida: desarma e marca quebra na próxima caminhada
+                    self._trail_armed = False
+                    self._trail_move_steps = 0
+                    self._trail_need_break = True
+                    self._trail_anchor_xy = (px, py)
+                    self._trail_prev_xy = (px, py)
+                elif not self._trail_armed:
+                    self._trail_prev_xy = (px, py)
+                    if self._trail_anchor_xy is None:
+                        self._trail_anchor_xy = (px, py)
+                    d_anchor = math.hypot(px - self._trail_anchor_xy[0], py - self._trail_anchor_xy[1])
+                    if 1.5 <= d_anchor <= 45.0:
+                        self._trail_anchor_xy = (px, py)
+                        self._trail_move_steps += 1
+                        if self._trail_move_steps >= 3:
+                            self._trail_armed = True
+                            self._last_trail_xy = (px, py)
+                            self._trail.append({
+                                "u": round(pu, 5),
+                                "v": round(pv, 5),
+                                "x": round(px, 1),
+                                "y": round(py, 1),
+                                "z": round(pz, 1),
+                                "brk": True,
+                            })
+                            self._trail_need_break = False
+                            if len(self._trail) > 1500:
+                                self._trail.pop(0)
+                else:
+                    self._trail_prev_xy = (px, py)
+                    d_last = (
+                        math.hypot(px - self._last_trail_xy[0], py - self._last_trail_xy[1])
+                        if self._last_trail_xy is not None
+                        else 9999.0
+                    )
+                    if 6.0 <= d_last <= 45.0:
+                        self._last_trail_xy = (px, py)
+                        self._trail.append({
+                            "u": round(pu, 5),
+                            "v": round(pv, 5),
+                            "x": round(px, 1),
+                            "y": round(py, 1),
+                            "z": round(pz, 1),
+                            "brk": bool(self._trail_need_break),
+                        })
+                        self._trail_need_break = False
+                        if len(self._trail) > 1500:
+                            self._trail.pop(0)
 
         cam_dist = math.sqrt((cam_pos[0] - hx) ** 2 + (cam_pos[1] - hy) ** 2 + (cam_pos[2] - hz) ** 2)
         drone_obj = None
@@ -564,16 +640,15 @@ class GRWLiveReader:
             "stance": "prone" if (hz - pz) < 0.65 else ("crouch" if (hz - pz) < 1.28 else "stand"),
         }
 
-        allies: list[dict[str, Any]] = []
+        coop_candidates: list[tuple[float, dict[str, Any]]] = []
+        ai_candidates: list[tuple[int, float, dict[str, Any], bool]] = []
         enemies: list[dict[str, Any]] = []
         rebels: list[dict[str, Any]] = []
         civilians: list[dict[str, Any]] = []
-        ai_idx = 0
-        coop_idx = 0
 
         for c in active_slots:
             kind = self._classify_character(
-                c, local_ent, local_skel, weapon_by_owner, player_vtable, player_rig, mod_base, coop_entities
+                c, local_ent, local_skel, weapon_by_owner, player_rig, mod_base, coop_entities
             )
             if kind == "player":
                 continue
@@ -594,6 +669,7 @@ class GRWLiveReader:
             look_dir = _norm3(_quat_rotate(hq, self.head_local_axis))
             yaw_deg = _vec_to_yaw_deg(look_dir)
             eu, ev = self.world_to_uv(rx, ry)
+            dist_p = math.hypot(rx - px, ry - py)
 
             aim_dir = look_dir
             is_aiming = False
@@ -607,35 +683,50 @@ class GRWLiveReader:
                         if math.sqrt(hand_vec[0] ** 2 + hand_vec[1] ** 2 + hand_vec[2] ** 2) > 0.12:
                             aim_dir = _norm3(hand_vec)
 
-            if kind in ("ally_ai", "ally_coop"):
-                if kind == "ally_coop":
-                    coop_idx += 1
-                    label = f"Co-op Ghost {coop_idx}"
+            base_obj = {
+                "skel_ptr": int(c.skel_ptr),
+                "x": round(rx, 2),
+                "y": round(ry, 2),
+                "z": round(rz, 2),
+                "u": round(eu, 5),
+                "v": round(ev, 5),
+                "head": [round(ehx, 2), round(ehy, 2), round(ehz, 2)],
+                "look_dir": [round(look_dir[0], 4), round(look_dir[1], 4), round(look_dir[2], 4)],
+                "aim_dir": [round(aim_dir[0], 4), round(aim_dir[1], 4), round(aim_dir[2], 4)],
+                "yaw": round(yaw_deg, 1),
+                "is_aiming": is_aiming,
+                "alert": alert_state,
+                "alive": True,
+                "has_weapon": w is not None,
+                "weapon_class": WEAPON_CATEGORY_MAP.get(int(w.weapon_category), "ar") if w else None,
+                "suppressed": (bool(int(w.muzzle_stuff) != 0) if (w and int(w.attachment_holder) != 0) else None),
+            }
+
+            if kind == "ally_coop":
+                coop_candidates.append((dist_p, base_obj))
+            elif kind == "ally_ai":
+                ai_candidates.append((0, dist_p, base_obj, True))
+            elif kind == "ally_ai_candidate":
+                if dist_p <= 120.0:
+                    ai_candidates.append((1, dist_p, base_obj, False))
                 else:
-                    ai_idx += 1
-                    names = ("Holt", "Midas", "Weaver")
-                    label = names[(ai_idx - 1) % len(names)]
-                aw_cls = WEAPON_CATEGORY_MAP.get(int(w.weapon_category), "ar") if w else "ar"
-                allies.append({
-                    "id": f"{kind}_{int(c.skel_ptr):x}",
-                    "type": "coop" if kind == "ally_coop" else "ai",
-                    "faction": "ghost",
-                    "name": label,
-                    "x": round(rx, 2),
-                    "y": round(ry, 2),
-                    "z": round(rz, 2),
-                    "u": round(eu, 5),
-                    "v": round(ev, 5),
-                    "head": [round(ehx, 2), round(ehy, 2), round(ehz, 2)],
-                    "look_dir": [round(look_dir[0], 4), round(look_dir[1], 4), round(look_dir[2], 4)],
-                    "aim_dir": [round(aim_dir[0], 4), round(aim_dir[1], 4), round(aim_dir[2], 4)],
-                    "yaw": round(yaw_deg, 1),
-                    "is_aiming": is_aiming,
-                    "alert": alert_state,
-                    "weapon_class": aw_cls,
-                    "suppressed": (bool(int(w.muzzle_stuff) != 0) if (w and int(w.attachment_holder) != 0) else None),
-                    "alive": True,
-                })
+                    npc_obj = {
+                        "id": f"npc_{base_obj['skel_ptr']:x}",
+                        "faction": "santa_blanca" if base_obj["has_weapon"] else "civilian",
+                        "x": base_obj["x"],
+                        "y": base_obj["y"],
+                        "z": base_obj["z"],
+                        "u": base_obj["u"],
+                        "v": base_obj["v"],
+                        "head": base_obj["head"],
+                        "look_dir": base_obj["look_dir"],
+                        "yaw": base_obj["yaw"],
+                        "alert": base_obj["alert"],
+                        "alive": True,
+                        "has_weapon": base_obj["has_weapon"],
+                        "weapon_class": base_obj["weapon_class"],
+                    }
+                    (enemies if npc_obj["faction"] == "santa_blanca" else civilians).append(npc_obj)
             else:
                 faction_str = {
                     "enemy_unidad": "unidad",
@@ -644,20 +735,20 @@ class GRWLiveReader:
                     "civilian": "civilian",
                 }.get(kind, "santa_blanca")
                 npc_obj = {
-                    "id": f"npc_{int(c.skel_ptr):x}",
+                    "id": f"npc_{base_obj['skel_ptr']:x}",
                     "faction": faction_str,
-                    "x": round(rx, 2),
-                    "y": round(ry, 2),
-                    "z": round(rz, 2),
-                    "u": round(eu, 5),
-                    "v": round(ev, 5),
-                    "head": [round(ehx, 2), round(ehy, 2), round(ehz, 2)],
-                    "look_dir": [round(look_dir[0], 4), round(look_dir[1], 4), round(look_dir[2], 4)],
-                    "yaw": round(yaw_deg, 1),
-                    "alert": alert_state,
+                    "x": base_obj["x"],
+                    "y": base_obj["y"],
+                    "z": base_obj["z"],
+                    "u": base_obj["u"],
+                    "v": base_obj["v"],
+                    "head": base_obj["head"],
+                    "look_dir": base_obj["look_dir"],
+                    "yaw": base_obj["yaw"],
+                    "alert": base_obj["alert"],
                     "alive": True,
-                    "has_weapon": w is not None,
-                    "weapon_class": WEAPON_CATEGORY_MAP.get(int(w.weapon_category), "ar") if w else None,
+                    "has_weapon": base_obj["has_weapon"],
+                    "weapon_class": base_obj["weapon_class"],
                 }
                 if faction_str in ("santa_blanca", "unidad"):
                     enemies.append(npc_obj)
@@ -665,6 +756,96 @@ class GRWLiveReader:
                     rebels.append(npc_obj)
                 else:
                     civilians.append(npc_obj)
+
+        # Limite rígido de esquadrão no GRW: no máximo 3 aliados além do jogador (Co-op primeiro, depois IA Holt/Midas/Weaver)
+        allies: list[dict[str, Any]] = []
+        coop_candidates.sort(key=lambda t: t[0])
+        ai_candidates.sort(key=lambda t: (t[0], t[1]))
+
+        for idx_c, (_dist, bo) in enumerate(coop_candidates, start=1):
+            if len(allies) < 3:
+                allies.append({
+                    "id": f"ally_coop_{bo['skel_ptr']:x}",
+                    "type": "coop",
+                    "faction": "ghost",
+                    "name": f"Co-op Ghost {idx_c}",
+                    "x": bo["x"],
+                    "y": bo["y"],
+                    "z": bo["z"],
+                    "u": bo["u"],
+                    "v": bo["v"],
+                    "head": bo["head"],
+                    "look_dir": bo["look_dir"],
+                    "aim_dir": bo["aim_dir"],
+                    "yaw": bo["yaw"],
+                    "is_aiming": bo["is_aiming"],
+                    "alert": bo["alert"],
+                    "weapon_class": bo["weapon_class"] or "ar",
+                    "suppressed": bo["suppressed"],
+                    "alive": True,
+                })
+            else:
+                npc_obj = {
+                    "id": f"npc_{bo['skel_ptr']:x}",
+                    "faction": "santa_blanca" if bo["has_weapon"] else "civilian",
+                    "x": bo["x"],
+                    "y": bo["y"],
+                    "z": bo["z"],
+                    "u": bo["u"],
+                    "v": bo["v"],
+                    "head": bo["head"],
+                    "look_dir": bo["look_dir"],
+                    "yaw": bo["yaw"],
+                    "alert": bo["alert"],
+                    "alive": True,
+                    "has_weapon": bo["has_weapon"],
+                    "weapon_class": bo["weapon_class"],
+                }
+                (enemies if npc_obj["faction"] == "santa_blanca" else civilians).append(npc_obj)
+
+        ai_names = ("Holt", "Midas", "Weaver")
+        ai_count = 0
+        for _prio, _dist, bo, _explicit in ai_candidates:
+            if len(allies) < 3:
+                ai_count += 1
+                allies.append({
+                    "id": f"ally_ai_{bo['skel_ptr']:x}",
+                    "type": "ai",
+                    "faction": "ghost",
+                    "name": ai_names[(ai_count - 1) % len(ai_names)],
+                    "x": bo["x"],
+                    "y": bo["y"],
+                    "z": bo["z"],
+                    "u": bo["u"],
+                    "v": bo["v"],
+                    "head": bo["head"],
+                    "look_dir": bo["look_dir"],
+                    "aim_dir": bo["aim_dir"],
+                    "yaw": bo["yaw"],
+                    "is_aiming": bo["is_aiming"],
+                    "alert": bo["alert"],
+                    "weapon_class": bo["weapon_class"] or "ar",
+                    "suppressed": bo["suppressed"],
+                    "alive": True,
+                })
+            else:
+                npc_obj = {
+                    "id": f"npc_{bo['skel_ptr']:x}",
+                    "faction": "santa_blanca" if bo["has_weapon"] else "civilian",
+                    "x": bo["x"],
+                    "y": bo["y"],
+                    "z": bo["z"],
+                    "u": bo["u"],
+                    "v": bo["v"],
+                    "head": bo["head"],
+                    "look_dir": bo["look_dir"],
+                    "yaw": bo["yaw"],
+                    "alert": bo["alert"],
+                    "alive": True,
+                    "has_weapon": bo["has_weapon"],
+                    "weapon_class": bo["weapon_class"],
+                }
+                (enemies if npc_obj["faction"] == "santa_blanca" else civilians).append(npc_obj)
 
         return {
             "mode": "live",

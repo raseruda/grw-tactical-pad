@@ -209,7 +209,7 @@ class GhostPadRuntime:
         self._wmap_heat = WmapReader(game_dir / "gr_h.wmap")
         self._heightmap = HeightmapSampler()
         self._live_reader = GRWLiveReader(telemetry_ptr=telemetry_ptr, world_bounds=settings.get("world_bounds"))
-        self._save_sync = AutoProgressSync()
+        self._save_sync = AutoProgressSync(game_dir=game_dir)
 
         self._state_lock = threading.Lock()
         self._sse_cond = threading.Condition(self._state_lock)
@@ -379,6 +379,23 @@ class GhostPadRuntime:
                 return self._static_gz[name], True
             return self._static_bytes[name], False
 
+    def _run_save_sync(self, force: bool = False) -> None:
+        try:
+            self._save_sync.set_context(game_dir=self.game_dir)
+            self._save_sync.reload_index()
+            with self._state_lock:
+                cur_prog = dict(self._progress)
+            new_prog, changed = self._save_sync.sync_disk_saves(cur_prog, force=force)
+            if changed:
+                saved = save_progress(new_prog)
+                with self._sse_cond:
+                    self._progress = saved
+                    self._progress_version += 1
+                    self._live_seq += 1
+                    self._sse_cond.notify_all()
+        except Exception:
+            pass
+
     def _run_builder(self, force: bool = False) -> None:
         def cb(pct: int, msg: str) -> None:
             with self._build_lock:
@@ -391,7 +408,7 @@ class GhostPadRuntime:
                 self._static_bytes.clear()
                 self._static_gz.clear()
             self._load_static_caches()
-            self._save_sync.reload_index()
+            self._run_save_sync(force=True)
             cb(100, "Ready")
         except Exception as exc:
             with self._build_lock:
@@ -400,7 +417,7 @@ class GhostPadRuntime:
     def start_background_tasks(self, force_rebuild: bool = False) -> None:
         if not force_rebuild and grw_asset_builder.is_cache_valid(self.lang, self.game_dir):
             self._load_static_caches()
-            self._save_sync.reload_index()
+            self._run_save_sync(force=False)
             with self._build_lock:
                 self._build_status = {"state": "ready", "progress": 100, "message": "Ready"}
         else:
