@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 BUILD_DIR = Path(__file__).resolve().parent / "build"
 RELEASE_DIR = ROOT_DIR / "mod_release"
-RELEASE_ZIP = ROOT_DIR / "GhostPad_GRW_v1.1.0.zip"
+RELEASE_ZIP = ROOT_DIR / "GhostPad_GRW_v1.3.0.zip"
 SYSTEM_WINMM = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "winmm.dll"
 VCVARS64 = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat")
 

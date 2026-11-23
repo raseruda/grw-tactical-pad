@@ -26,8 +26,8 @@ Run it automatically on a **second monitor** alongside `GRW.exe` or open it from
 
 ## Installation (Pre-Built Release)
 
-1. Download and extract **`GhostPad_GRW_v1.1.0.zip`**.
-2. Run **`GhostPad\Instalar Mod.bat`** *or* copy `winmm.dll`, `GhostTacticalPad.exe`, and `GhostPad\` next to `GRW.exe` inside your game directory (e.g. `C:\Program Files (x86)\Steam\steamapps\common\Wildlands\`).
+1. Download and extract **`GhostPad_GRW_v1.3.0.zip`**.
+2. Run **`Instalar Mod.bat`** *or* copy `winmm.dll`, `GhostTacticalPad.exe`, and `GhostPad\` next to `GRW.exe` inside your game directory (e.g. `C:\Program Files (x86)\Steam\steamapps\common\Wildlands\`).
 3. Launch **Ghost Recon Wildlands** normally. Ghost Tactical Pad starts its local HTTP/SSE server on port **`8766`** and opens automatically on your secondary display (or at `http://127.0.0.1:8766` / your LAN IP shown in the Settings modal).
 
 > **Standalone / Offline Mode:** Double-click **`GhostTacticalPad.exe`** (or **`Iniciar Ghost Pad.bat`**) anytime without opening the game and without having Python installed on your PC.
@@ -47,7 +47,7 @@ pip install -r requirements.txt
 python mod_native/build_proxy.py
 ```
 
-`build_proxy.py` compiles `winmm.dll` (`181` forwarded WinMM exports + Title Update 25 NPC/camera/weapon/`UPLAY_SAVE` observer hooks + native LZO1X decompressor) and `GhostTacticalPad.exe` (native standalone launcher loading the bundled embedded Python 3.12 runtime), validates clean PE/zip rules, and produces `GhostPad_GRW_v1.1.0.zip`.
+`build_proxy.py` compiles `winmm.dll` (`181` forwarded WinMM exports + Title Update 25 NPC/camera/weapon/`UPLAY_SAVE` observer hooks + native LZO1X decompressor) and `GhostTacticalPad.exe` (native standalone launcher loading the bundled embedded Python 3.12 runtime), validates clean PE/zip rules, and produces `GhostPad_GRW_v1.3.0.zip`.
 
 ### Running Tests
 
