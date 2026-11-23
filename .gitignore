@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+cache/
+data/
+mod_native/build/
+mod_release/
+*.zip
+.pytest_cache/
+*.log
